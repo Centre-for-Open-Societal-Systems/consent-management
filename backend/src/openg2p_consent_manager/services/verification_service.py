@@ -132,10 +132,86 @@ class VerificationService(BaseService):
                 partner_id=partner.id, jti=obj.jti, policy_version=result.policy_version,
             )
 
+        # 9. Subject grant (gap B8) — if the subject granted a consent to this
+        # partner through the origination flow, that grant is AUTHORITATIVE: it
+        # narrows what the partner's self-asserted object can obtain, and makes
+        # the subject's revocation actually bite.
+        grant = None
+        basis = await self._lawful_basis(partner.id)
+        if _config.subject_consent_enabled:
+            grant = await self._active_subject_grant(partner.id, obj.subject_id)
+            if grant is None:
+                # A partner operating on the controller's own lawful basis is
+                # never sent to look for a grant. Reaching here means steps 1-8
+                # already passed, so what is being skipped is ONLY the subject's
+                # say - the signature, the replay window and the policy ceiling
+                # in result.effective_scopes all still bind, and that ceiling is
+                # now the whole of what this partner can obtain.
+                if basis != "consent":
+                    _logger.info(
+                        "Partner %s: no subject grant sought - lawful_basis=%s. "
+                        "Releasing %d scope(s) on the policy ceiling alone.",
+                        partner.id, basis, len(result.effective_scopes or []))
+                elif _config.subject_consent_required:
+                    return await self._deny(
+                        ReasonCode.no_subject_consent,
+                        "the subject has not granted an active consent to this partner",
+                        now, ctx_hash, partner_id=partner.id, jti=obj.jti,
+                        policy_version=result.policy_version,
+                    )
+            else:
+                granted = set(grant.effective_data_scopes or [])
+                narrowed = sorted(set(result.effective_scopes) & granted)
+                if not narrowed:
+                    return await self._deny(
+                        ReasonCode.scope_exceeds_policy,
+                        "no requested scope was granted by the subject",
+                        now, ctx_hash, partner_id=partner.id, jti=obj.jti,
+                        policy_version=result.policy_version,
+                    )
+                result.effective_scopes = narrowed
+
         # Permit — mint canonical artefact + signed receipt + decision log.
         return await self._permit(
-            obj, partner, result, now, ctx_hash
+            obj, partner, result, now, ctx_hash, grant=grant, basis=basis
         )
+
+    async def _lawful_basis(self, partner_id: str) -> str:
+        """Why this partner may hold the data — "consent" unless stated.
+
+        Anything unrecognised, and a partner with no active policy at all, reads
+        as "consent": the strict answer is the safe one, and a basis that stops
+        being understood must not become a way past the subject.
+        """
+        policy = await self.partners.get_policy(partner_id)
+        basis = getattr(policy, "lawful_basis", None) if policy else None
+        return basis if basis in ("consent", "legitimate_interest") else "consent"
+
+    async def _active_subject_grant(self, partner_id: str, subject_id):
+        """The subject's own granted consent (origination flow) for this partner.
+
+        Returns the newest ACTIVE, unexpired originated artefact matching the
+        partner and the subject identified in the partner's consent object, or
+        None. A revoked or expired grant returns None, so revocation takes
+        effect on the next fetch.
+        """
+        now = datetime.now(timezone.utc)
+        async with async_session()() as session:
+            rows = await session.execute(
+                select(ConsentArtefact)
+                .where(
+                    ConsentArtefact.partner_id == partner_id,
+                    ConsentArtefact.source == ArtefactSource.originated.value,
+                    ConsentArtefact.status == ArtefactStatus.active.value,
+                    ConsentArtefact.subject_id_type == subject_id.type,
+                    ConsentArtefact.subject_id_value == subject_id.value,
+                )
+                .order_by(ConsentArtefact.created_at.desc())
+            )
+            for artefact in rows.scalars().all():
+                if _aware(artefact.valid_until) > now:
+                    return artefact
+        return None
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -189,7 +265,8 @@ class VerificationService(BaseService):
             evaluated_at=now,
         )
 
-    async def _permit(self, obj, partner, result, now, ctx_hash) -> Decision:
+    async def _permit(self, obj, partner, result, now, ctx_hash, grant=None,
+                      basis: str = "consent") -> Decision:
         from ..schemas.common import SubjectId
 
         artefact = ConsentArtefact(
@@ -206,6 +283,10 @@ class VerificationService(BaseService):
             source=ArtefactSource.embedded.value,
             policy_version=result.policy_version,
             object_jti=obj.jti,
+            # Gap B8: when the subject granted this consent, carry their auth
+            # context onto the fetch artefact. This is the link that was missing
+            # between the two flows.
+            auth_context_id=grant.auth_context_id if grant is not None else None,
             status=ArtefactStatus.active.value,
         )
         receipt = self.receipts.build_receipt(artefact, partner)
@@ -230,6 +311,7 @@ class VerificationService(BaseService):
             subject_id=SubjectId(type=obj.subject_id.type, value=obj.subject_id.value),
             effective_data_scopes=result.effective_scopes,
             valid_until=artefact.valid_until, policy_version=result.policy_version,
+            lawful_basis=basis,
             evaluated_at=now,
         )
 

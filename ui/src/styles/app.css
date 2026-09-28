@@ -231,3 +231,107 @@ code.mono {
   color: var(--color-text-muted);
   padding: 24px 0;
 }
+
+/* ── System records (My consents) ─────────────────────────────────────── */
+.system-toggle {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -8px 0 20px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.system-toggle .muted {
+  font-size: 13px;
+}
+.record-tag {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  background: rgba(42, 71, 122, 0.08);
+  color: var(--color-blue);
+}
+.activity-table {
+  margin-top: 16px;
+  box-shadow: none;
+  border: 1px solid var(--color-light-grey);
+}
+.activity-table th,
+.activity-table td {
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+/* ── Filter menu (My consents) ──────────────────────────────────────────────
+   A button-and-popover rather than a <select>, because each option carries a
+   count and a line of explanation that a native select cannot render. */
+.filter-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+.filter-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.filter-count {
+  display: inline-block;
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--color-light-grey);
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+.filter-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  min-width: 280px;
+  padding: 6px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(6, 19, 39, 0.16);
+}
+.filter-option {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  font: inherit;
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+.filter-option:hover {
+  background: var(--color-light-grey);
+}
+.filter-option.selected {
+  background: rgba(245, 187, 26, 0.16);
+}
+.filter-option.selected .filter-count {
+  background: var(--color-accent);
+  color: var(--color-black);
+}
+.filter-option-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-weight: 500;
+}
+.filter-option-hint {
+  margin-top: 2px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}

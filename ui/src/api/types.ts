@@ -46,7 +46,24 @@ export interface PolicyUpsert {
   fetch_type: FetchType;
   max_fetch_frequency?: string | null;
   data_life?: string | null;
+  // How this partner's subjects must prove who they are. One setting, two
+  // gates, and a request only ever meets one of them: the consent screen when
+  // the subject has never been asked, the fetch itself when they already
+  // consented. Null means an id_token is enough on the screen, and a fetch
+  // proceeds on the standing consent with no second factor.
+  required_auth_method?: AuthMethod;
+  // WHY this partner may hold the data — a different question from how the
+  // subject proves who they are. "consent" needs a subject grant;
+  // "legitimate_interest" seeks none, and the policy's allowed_data_scopes
+  // becomes the ceiling in the grant's place. For an INTERNAL partner only.
+  lawful_basis?: LawfulBasis;
 }
+
+export type LawfulBasis = "consent" | "legitimate_interest";
+
+// The backend rejects anything else rather than storing it — an unrecognised
+// value would read as "no authentication required" and quietly drop a factor.
+export type AuthMethod = "otp" | null;
 
 export interface PartnerPolicy extends PolicyUpsert {
   id: string;
@@ -119,6 +136,13 @@ export interface Artefact {
   valid_until: string;
   created_at: string;
   revoked_at?: string | null;
+  // Subject routes only. `consent` is a decision; `registry_grant` and
+  // `access` are what the aggregator did under one, and point at it.
+  record_kind?: "consent" | "registry_grant" | "access" | null;
+  derived_from?: string | null;
+  activity_count?: number | null;
+  partner_name?: string | null;
+  controller_id?: string | null;
 }
 
 export interface Paginated<T> {
@@ -147,4 +171,10 @@ export interface ConsentRequest {
   valid_from?: string | null;
   valid_until?: string | null;
   created_at: string;
+  // From the partner's policy: "otp" means this screen must collect a code
+  // before it may approve. Null keeps the IdP-token path.
+  required_auth_method?: string | null;
+  otp_channel?: string | null;
+  otp_expires_at?: string | null;
+  otp_verified_at?: string | null;
 }

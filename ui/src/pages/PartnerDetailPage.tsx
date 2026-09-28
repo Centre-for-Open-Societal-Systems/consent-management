@@ -165,6 +165,28 @@ function PolicySection({ partnerId }: { partnerId: string }) {
                 <th>Data life</th>
                 <td>{humaniseDuration(active.data_life)}</td>
               </tr>
+              <tr>
+                <th>Lawful basis</th>
+                <td>
+                  {active.lawful_basis === "legitimate_interest" ? (
+                    <strong>Legitimate interest — no consent is sought</strong>
+                  ) : (
+                    <>Consent — the subject must grant one</>
+                  )}
+                </td>
+              </tr>
+              <tr>
+                <th>Subject authentication</th>
+                <td>
+                  {active.required_auth_method === "otp" ? (
+                    <>One-time code</>
+                  ) : (
+                    <span className="muted">
+                      None — a consent alone releases the data
+                    </span>
+                  )}
+                </td>
+              </tr>
             </tbody>
           </table>
         ) : (
@@ -240,6 +262,10 @@ const DEFAULT_POLICY: PolicyUpsert = {
   fetch_type: "oneshot",
   max_fetch_frequency: null,
   data_life: null,
+  // Default ON. A policy that omits this reads as "no second factor", so the
+  // safe default has to be the one that asks for more, not less.
+  required_auth_method: "otp",
+  lawful_basis: "consent",
 };
 
 function PolicyForm({
@@ -325,6 +351,68 @@ function PolicyForm({
           </select>
         </div>
       </div>
+
+      <div className="field">
+        <label>Lawful basis</label>
+        <select
+          value={form.lawful_basis ?? "consent"}
+          onChange={(e) => {
+            const basis = e.target.value as PolicyUpsert["lawful_basis"];
+            // An internal partner has no consent screen, so there is nowhere to
+            // present a code. The backend refuses the combination outright;
+            // clearing it here means the form cannot build a body it will reject.
+            setForm((f) => ({
+              ...f,
+              lawful_basis: basis,
+              required_auth_method: basis === "consent" ? f.required_auth_method : null,
+            }));
+          }}
+        >
+          <option value="consent">Consent — the subject must grant one</option>
+          <option value="legitimate_interest">
+            Legitimate interest — internal partner, no consent sought
+          </option>
+        </select>
+        {form.lawful_basis === "legitimate_interest" ? (
+          <div className="notice notice-error" style={{ marginTop: 8 }}>
+            <strong>No subject is asked, and none can refuse.</strong> This partner
+            receives data without a consent and without the subject knowing. Everything
+            else still binds — the signature, the freshness window, and above all the
+            allowed data scopes above, which become the entire ceiling in the consent's
+            place. Intended for a partner inside this controller's own organisation
+            operating on its own lawful basis. Removing consent needs approval before it
+            takes effect.
+          </div>
+        ) : (
+          <div className="hint">
+            The subject grants a consent, and that grant narrows whatever this partner
+            asks for.
+          </div>
+        )}
+      </div>
+
+      {form.lawful_basis === "consent" && (
+      <div className="field">
+        <label>Subject authentication</label>
+        <select
+          value={form.required_auth_method ?? ""}
+          onChange={(e) =>
+            setForm((f) => ({
+              ...f,
+              required_auth_method: (e.target.value || null) as PolicyUpsert["required_auth_method"],
+            }))
+          }
+        >
+          <option value="otp">One-time code (OTP)</option>
+          <option value="">None — the consent alone is enough</option>
+        </select>
+        <div className="hint">
+          {form.required_auth_method === "otp"
+            ? "The subject enters a code before a consent to this partner can be approved, and before an already-consented fetch releases anything."
+            : "A subject who has consented releases data with no second factor, and the consent screen accepts an identity token instead of a code. Removing the code is a widening, so this version needs approval before it takes effect."}
+        </div>
+      </div>
+      )}
 
       {form.fetch_type === "periodic" && (
         <div className="row" style={{ alignItems: "flex-start", gap: 24 }}>

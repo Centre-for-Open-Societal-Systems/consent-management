@@ -42,6 +42,25 @@ class ConsentRequest(BaseORMModelWithId):
     valid_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default=RequestStatus.pending.value, index=True)
 
+    # ── OTP authentication ──────────────────────────────────────────────────
+    # The subject proves possession of their registered identity HERE, on the
+    # consent screen, rather than a second time later in the fetch flow. These
+    # are deliberately the same column names AggregationRequest uses, so
+    # ``otp_provider`` works on either object without knowing which it holds.
+    # The code itself is never stored — only its hash.
+    otp_hash: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    otp_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    otp_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    otp_verified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    otp_channel: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    otp_destination: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    otp_provider: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    otp_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # DEV ONLY, written only when otp_debug_enabled — see AggregationRequest.
+    otp_debug_code: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
 
 class AuthContext(BaseORMModelWithId):
     """Built from a validated OIDC ID token. The raw token is never stored."""

@@ -108,12 +108,46 @@ export const api = {
 
   // ── Consent request (originate / redirect flow) ────────────────────
   getConsentRequest: (id: string) => request<ConsentRequest>(`${V1}/consent-requests/${id}`),
+
+  // What is being ASKED of me, as opposed to /my/consents which is what I have
+  // already agreed to. Scoped to the caller by the token, so it takes no
+  // subject argument. Defaults to pending server-side.
+  // "all" means every status; absent would mean pending, which is the route's
+  // own default. These return the ENVELOPE, not just the items: a subject can
+  // have hundreds of rows, so `total` is the only honest source for a count and
+  // for saying how much of the history is on screen.
+  myConsentRequestsPage: (status = "pending", size = 100) =>
+    request<Paginated<ConsentRequest>>(
+      `${V1}/my/consent-requests?status=${encodeURIComponent(status || "all")}&size=${size}`
+    ),
+
+  // view "consents" drops the per-registry grants and access records an
+  // aggregated fetch writes under each decision; "all" is every row.
+  myConsentsPage: (status?: string, size = 100, view: "all" | "consents" = "all") =>
+    request<Paginated<Artefact>>(
+      `${V1}/my/consents?size=${size}&view=${view}${
+        status ? `&status=${encodeURIComponent(status)}` : ""
+      }`
+    ),
+  myConsentActivity: (id: string) => request<Artefact[]>(`${V1}/my/consents/${id}/activity`),
   // The subject authenticates by presenting their IdP id_token, then approves
   // with the scopes they agree to share.
   authenticateConsentRequest: (id: string, idToken: string) =>
     request<{ token_validated: boolean }>(`${V1}/consent-requests/${id}/authenticate`, {
       method: "POST",
       body: JSON.stringify({ id_token: idToken }),
+    }),
+  // …or, when the partner's policy requires it, by entering a one-time code.
+  // Both paths end in the same AuthContext; approve refuses without one.
+  issueConsentOtp: (id: string) =>
+    request<{ otp_channel: string | null; otp_expires_at: string | null }>(
+      `${V1}/consent-requests/${id}/otp`,
+      { method: "POST" },
+    ),
+  verifyConsentOtp: (id: string, otp: string) =>
+    request<{ auth_method: string | null }>(`${V1}/consent-requests/${id}/verify-otp`, {
+      method: "POST",
+      body: JSON.stringify({ otp }),
     }),
   approveConsentRequest: (id: string, grantedScopes: string[]) =>
     request<Artefact>(`${V1}/consent-requests/${id}/approve`, {

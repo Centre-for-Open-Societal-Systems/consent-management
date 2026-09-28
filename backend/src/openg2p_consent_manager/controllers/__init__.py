@@ -1,3 +1,4 @@
+from .aggregator_controller import AggregatorController
 from .awe_controller import AweController
 from .decisions_controller import DecisionsController
 from .lifecycle_controller import LifecycleController
@@ -8,6 +9,7 @@ from .wellknown_controller import WellKnownController
 
 __all__ = [
     "VerificationController",
+    "AggregatorController",
     "WellKnownController",
     "AweController",
     "DecisionsController",

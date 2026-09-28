@@ -115,3 +115,39 @@
   margin-top: 20px;
   font-size: 12px;
 }
+
+/* ── OTP step ──────────────────────────────────────────────────────────────
+   The code is the subject's signature on this consent, so it is given the
+   weight of one: wide spacing, large type, nothing else competing with it. */
+.consent-otp .muted {
+  margin: 4px 0 12px;
+}
+.otp-input {
+  width: 100%;
+  padding: 12px 14px;
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.4em;
+  text-align: center;
+  border: 1px solid var(--color-border, #d6d9de);
+  border-radius: 8px;
+  background: #fff;
+}
+.otp-input:focus {
+  outline: none;
+  border-color: var(--color-primary, #1f6feb);
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.15);
+}
+.btn-link {
+  margin-top: 10px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-primary, #1f6feb);
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn-link:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

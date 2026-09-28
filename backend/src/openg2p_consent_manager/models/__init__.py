@@ -1,3 +1,4 @@
+from .aggregation import AggregationRequest, AggregationStatus
 from .audit import AuditLog, DecisionLog
 from .awe import AweProcessedEvent
 from .base import BaseORMModelWithId, utcnow
@@ -21,6 +22,8 @@ from .partner import (
 
 __all__ = [
     "BaseORMModelWithId",
+    "AggregationRequest",
+    "AggregationStatus",
     "utcnow",
     "Partner",
     "PartnerPolicy",

@@ -73,6 +73,28 @@ class PartnerPolicy(BaseORMModelWithId):
     allowed_subject_id_types: Mapped[list] = mapped_column(JSONB, default=list)
     allowed_signing_algs: Mapped[list] = mapped_column(JSONB, default=list)
 
+    # How the subject must prove who they are before this partner's consent can
+    # be approved. "otp" makes the consent screen demand a one-time code;
+    # NULL keeps the original behaviour (an OIDC id_token is enough).
+    required_auth_method: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True)
+
+    # WHY this partner may hold the data at all — a different axis from
+    # required_auth_method, which only says how the subject proves who they are.
+    # Deliberately a separate column: overloading the auth field would mean a
+    # typo in "how do you authenticate" could switch off consent entirely.
+    #
+    #   "consent"             the subject must have granted one. The default,
+    #                         and what every policy written before this meant.
+    #   "legitimate_interest" the controller's own lawful basis carries the
+    #                         access and no subject grant is sought. For an
+    #                         INTERNAL partner inside the controller's own
+    #                         organisation. Everything else still applies: the
+    #                         signature, the replay window, and above all the
+    #                         policy's allowed_data_scopes, which becomes the
+    #                         ceiling in the grant's place.
+    lawful_basis: Mapped[str] = mapped_column(String(40), default="consent")
+
     # ISO-8601 durations, e.g. "P1Y", "P30D". Parsed during evaluation.
     max_validity_duration: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     fetch_type: Mapped[str] = mapped_column(String(20), default=FetchType.oneshot.value)

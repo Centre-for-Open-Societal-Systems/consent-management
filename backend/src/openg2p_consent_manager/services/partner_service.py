@@ -133,6 +133,8 @@ class PartnerService(BaseService):
                 fetch_type=data.fetch_type,
                 max_fetch_frequency=data.max_fetch_frequency,
                 data_life=data.data_life,
+                required_auth_method=data.required_auth_method,
+                lawful_basis=getattr(data, "lawful_basis", "consent") or "consent",
                 effective_from=effective_from,
             )
             session.add(policy)
@@ -251,6 +253,22 @@ class PartnerService(BaseService):
         ):
             return True
         if PartnerService._duration_loosened(data.data_life, active.data_life):
+            return True
+        # Dropping the authentication requirement is a widening in the same sense
+        # a larger scope set is: the partner reaches the same data with less proof
+        # from the subject. It gates a fetch, not just the consent screen, so a
+        # version that removes it must go through approval rather than take
+        # effect the moment it is posted.
+        if (active.required_auth_method or "") and not (
+                getattr(data, "required_auth_method", None) or ""):
+            return True
+        # Leaving consent behind is the largest widening available: it does not
+        # loosen a limit on what the subject agreed to, it removes the subject
+        # from the decision. Nothing about that should take effect the moment
+        # someone posts it.
+        old_basis = getattr(active, "lawful_basis", "consent") or "consent"
+        new_basis = getattr(data, "lawful_basis", "consent") or "consent"
+        if old_basis == "consent" and new_basis != "consent":
             return True
         return False
 

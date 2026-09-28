@@ -18,6 +18,7 @@ class ReasonCode(str, Enum):
     expired = "expired"
     revoked = "revoked"
     replay = "replay"
+    no_subject_consent = "no_subject_consent"
 
 
 class SubjectId(BaseModel):

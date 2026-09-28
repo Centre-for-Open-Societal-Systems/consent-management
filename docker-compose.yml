@@ -1,12 +1,15 @@
 services:
   db:
+    # Survive a Docker Desktop restart; without this the whole
+    # Consent Manager project stays Exited while the farmer stack returns.
+    restart: unless-stopped
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: consent_manager_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -16,9 +19,22 @@ services:
       retries: 5
 
   backend:
+    # Survive a Docker Desktop restart; without this the whole
+    # Consent Manager project stays Exited while the farmer stack returns.
+    restart: unless-stopped
+    # Lets "localhost:8080" inside the container reach Keycloak on the host,
+    # so service tokens carry the issuer AWE expects (mirrors AWE's own compose).
+    extra_hosts:
+      - "localhost:host-gateway"
     build:
       context: .
       dockerfile: docker/consent-manager-api/Dockerfile
+      args:
+        # HEAD pins 1.2.0, but that release MOVED crypto out of
+        # openg2p_fastapi_common.utils, which this code still imports ->
+        # ModuleNotFoundError: No module named 'openg2p_fastapi_common.utils'.
+        # 'develop' (what the previous commit pinned) still provides utils/crypto.
+        FASTAPI_COMMON_REF: develop
     ports:
       - "8000:8000"
     environment:
@@ -27,20 +43,101 @@ services:
       CONSENT_MANAGER_DB_USERNAME: postgres
       CONSENT_MANAGER_DB_PASSWORD: postgres
       CONSENT_MANAGER_DB_DBNAME: consent_manager_db
+      # Partner Management: where partner public keys come from. Empty here
+      # means verification fails closed (no key -> deny).
+      CONSENT_MANAGER_PARTNER_MGMT_API_URL: "http://commons-services-pm-partner-api:8000"
+      # Gap B8: the subject's granted consent gates the partner's fetch.
+      # An active originated artefact narrows the decision to what the subject
+      # actually granted; "true" additionally DENIES when there is no grant.
+      # Set to "false" to keep the old partner-signed-only behaviour.
+      CONSENT_MANAGER_SUBJECT_CONSENT_REQUIRED: "true"
       # Local dev: disable Keycloak auth and use an ephemeral signing key.
       # Provide a .p12 key + Keycloak settings in real deployments (see backend/.env.example).
-      CONSENT_MANAGER_AUTH_ENABLED: "false"
+      CONSENT_MANAGER_AUTH_ENABLED: "true"
+      CONSENT_MANAGER_AUTH_ISSUER: "http://localhost:8080/realms/staff"
+      CONSENT_MANAGER_AUTH_JWKS_URL: "http://keycloak:8080/realms/staff/protocol/openid-connect/certs"
+      # AWE integration is OFF by default (awe_enabled=False, awe_base_url="").
+      # Point it at the AWE already running in the openg2p-developer stack.
+      CONSENT_MANAGER_AWE_ENABLED: "true"
+      CONSENT_MANAGER_AWE_BASE_URL: "http://awe:8000"
+      CONSENT_MANAGER_AWE_TOKEN_URL: "http://localhost:8080/realms/staff/protocol/openid-connect/token"
+      CONSENT_MANAGER_AWE_CLIENT_ID: "consent-manager-service"
+      CONSENT_MANAGER_AWE_CLIENT_SECRET: "dev-consent-manager-service-secret"
+      # Webhook: AWE POSTs the terminal decision back here, HMAC-signed.
+      # Without this a policy approval never reaches CM and the version
+      # stays `pending` forever.
+      CONSENT_MANAGER_AWE_CALLBACK_URL: "http://consent-manager-api:8000/consent/v1/awe/webhooks/decision"
+      CONSENT_MANAGER_AWE_CALLBACK_SECRET_ID: "cm-local-callback"
+      CONSENT_MANAGER_AWE_CALLBACK_HMAC_SECRET: "dev-cm-callback-secret"
+      # ── Aggregator: async, OTP-gated, cross-registry fetch ──────────────
+      # One partner call spanning several registries, answered on a callback
+      # once the subject has entered an OTP. The aggregator calls each
+      # registry's UNCHANGED /dci/registry/sync/search as an ordinary partner,
+      # so consent is enforced per hop rather than bypassed. Service aliases,
+      # not published ports - this runs inside the stack.
+      # ── CM signing key ───────────────────────────────────────────────────
+      # Without this, crypto_service generates an EPHEMERAL key per worker at
+      # startup: receipts stop verifying across restarts AND across workers,
+      # and the aggregator's public key could never be registered in Partner
+      # Management. Dev-grade (it is in the compose file) but persistent.
+      CONSENT_MANAGER_CM_SIGNING_PRIVATE_KEY_PEM: |
+        -----BEGIN PRIVATE KEY-----
+        MC4CAQAwBQYDK2VwBCIEIGvX6MKTEfKq/CME0oJj4cEmu3KfYC2C8v94SrcCQPXh
+        -----END PRIVATE KEY-----
+      CONSENT_MANAGER_CM_SIGNING_KID: "cm-2025-01"
+      # OFF here on purpose. This container is the ORIGINAL consent backend on
+      # :8000; the aggregator runs as a separate local process on :8100 so the
+      # two can be demonstrated side by side. The controller only mounts when
+      # this is true, so the routes simply do not exist here.
+      CONSENT_MANAGER_AGGREGATOR_ENABLED: "false"
+      CONSENT_MANAGER_AGGREGATOR_REGISTRIES: >-
+        {"farmer":{"url":"http://openg2p-farmer-registry-partner-api:8000","audience":"agg-farmer","controller_id":"farmer_registry","reg_type":"Farmer","reg_record_type":"spdci-extensions-dci:FarmerRecord","receiver_id":"farmer-registry","id_type":"functional_id"},"livestock":{"url":"http://livestock-registry-partner-api:8000","audience":"agg-livestock","controller_id":"livestock_registry","reg_type":"Livestock","reg_record_type":"spdci-extensions-dci:LivestockRecord","receiver_id":"livestock-registry","id_type":"functional_id"},"cropsown":{"url":"http://cropsown-registry-partner-api:8000","audience":"agg-cropsown","controller_id":"cropsown_registry","reg_type":"CropSown","reg_record_type":"spdci-extensions-dci:CropSownRecord","receiver_id":"cropsown-registry","id_type":"functional_id"}}
+      # Each registry's consent object is minted per fetch and lives only as
+      # long as the fetch needs, well inside the 300s replay window.
+      CONSENT_MANAGER_AGGREGATOR_CONSENT_VALIDITY_SEC: "300"
+      # ── OTP: the subject's real-time authorisation ──────────────────────
+      CONSENT_MANAGER_OTP_LENGTH: "6"
+      CONSENT_MANAGER_OTP_TTL_SEC: "300"
+      CONSENT_MANAGER_OTP_MAX_ATTEMPTS: "3"
+      # Mixed into the stored hash so a leaked row cannot be brute-forced
+      # offline against a 6-digit space. Change this per environment.
+      CONSENT_MANAGER_OTP_SALT: "dev-otp-salt-change-me"
+      # DEV ONLY. There is no SMS gateway here, so the code is written to this
+      # container's log and this endpoint reports the OTP state beside it.
+      CONSENT_MANAGER_OTP_DEBUG_ENABLED: "true"
       CONSENT_MANAGER_NO_OF_WORKERS: "4"
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      default:
+        aliases:
+          # ui/nginx.conf proxies /consent/ to host "consent-manager-api",
+          # but this service is named "backend" -> add the alias it expects.
+          - consent-manager-api
+      openg2p:
+        aliases:
+          - consent-manager-api
 
   frontend:
-    build: ./frontend
+    # Survive a Docker Desktop restart; without this the whole
+    # Consent Manager project stays Exited while the farmer stack returns.
+    restart: unless-stopped
+    build: ./ui
+    volumes:
+      # Runtime config (no rebuild needed to repoint Keycloak).
+      - ./ui/public/config.json:/usr/share/nginx/html/config.json:ro
+      - ./ui/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
-      - "3000:80"
+      - "${CM_UI_PORT:-3002}:8080"
     depends_on:
       - backend
+
+networks:
+  default:
+  openg2p:
+    external: true
+    name: openg2p-developer_default
 
 volumes:
   pgdata:

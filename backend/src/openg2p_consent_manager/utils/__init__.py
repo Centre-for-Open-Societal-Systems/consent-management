@@ -1,3 +1,4 @@
+from . import fayda_otp
 from .cache import TTLCache
 from .canonical import (
     b64url_decode,
@@ -10,6 +11,7 @@ from .jwks import jwk_to_pem_and_alg
 
 __all__ = [
     "TTLCache",
+    "fayda_otp",
     "canonical_bytes",
     "sha256_hex",
     "b64url_encode",

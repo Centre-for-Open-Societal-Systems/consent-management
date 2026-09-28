@@ -71,4 +71,9 @@ class Decision(BaseModel):
     effective_data_scopes: Optional[List[str]] = None
     valid_until: Optional[datetime] = None
     policy_version: Optional[int] = None
+    # Why the data may move: "consent" (a subject grant narrowed this) or
+    # "legitimate_interest" (no grant was sought; the policy ceiling is the
+    # whole of the authority). Carried so callers can record WHICH it was
+    # rather than inferring it from the absence of something.
+    lawful_basis: str = "consent"
     evaluated_at: datetime

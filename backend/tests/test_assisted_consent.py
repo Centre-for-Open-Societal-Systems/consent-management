@@ -499,10 +499,12 @@ def test_validate_consent_id_permit(call, portal, as_partner, bank, upload):
 
 
 def test_validate_needs_exactly_one_consent(call):
-    assert call("POST", "/consent/v1/validate", json={})[0] == 400
-    status, _ = call("POST", "/consent/v1/validate",
-                     json={"consent_jws": "a.b.c", "consent_id": "x"})
-    assert status == 400
+    # A malformed request is a clean 200 deny (the partner api's contract).
+    for body in ({}, {"consent_jws": "a.b.c", "consent_id": "x"}):
+        status, decision = call("POST", "/consent/v1/validate", json=body)
+        assert status == 200, decision
+        assert decision["decision"] == "deny" and decision["reason_code"] == "malformed_object"
+        assert "exactly one" in decision["detail"]
 
 
 def test_validate_consent_id_denials(call, portal, as_partner, bank, upload, run, new_partner):

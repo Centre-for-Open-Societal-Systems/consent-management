@@ -119,15 +119,17 @@ class VerificationController(BaseController):
         )
 
     async def validate(self, payload: dict = Body(...)) -> Decision:
-        # Parse defensively so a malformed request is a clean deny, not a 422.
-        # The consent object itself is a compact JWS (consent_jws); its claims
-        # and signature are validated inside the verification service.
+        # Parse defensively so a malformed request is a clean 200 deny, not a
+        # 4xx (the partner api's contract). The consent object itself is a
+        # compact JWS (consent_jws) or a stored consent's ID (consent_id); its
+        # claims and signature are validated inside the verification service.
         if not isinstance(payload, dict) or bool(payload.get("consent_jws")) == bool(
             payload.get("consent_id")
         ):
-            return JSONResponse(
-                status_code=400,
-                content={"error": "give exactly one of 'consent_jws' or 'consent_id'"},
+            return Decision(
+                decision="deny", reason_code=ReasonCode.malformed_object,
+                detail="give exactly one of 'consent_jws' or 'consent_id'",
+                evaluated_at=datetime.now(timezone.utc),
             )
         try:
             parsed = ValidateRequest(**payload)

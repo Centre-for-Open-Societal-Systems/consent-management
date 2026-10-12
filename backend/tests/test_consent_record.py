@@ -1,4 +1,4 @@
-# ruff: noqa: F811  (fixtures imported from other test modules are test parameters)
+# ruff: noqa: F401, F811  (fixtures imported from other test modules are test parameters)
 """The partner's copy of a consent (GET …/consents/{id}/record): a ZIP with the
 unchanged receipt, the evidence and a CM-signed statement tying them together."""
 import hashlib

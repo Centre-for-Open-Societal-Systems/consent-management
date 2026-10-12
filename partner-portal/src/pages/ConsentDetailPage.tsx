@@ -98,6 +98,12 @@ export default function ConsentDetailPage() {
           <dd>
             <code className="mono">{c.subject_id?.type}</code> {c.subject_id?.value}
           </dd>
+          {(c.subject_identifiers ?? []).map((i) => (
+            <span key={i.type} style={{ display: "contents" }}>
+              <dt>{i.type}</dt>
+              <dd>{i.value}</dd>
+            </span>
+          ))}
           <dt>Purpose</dt>
           <dd>{purposeLabel(c.purpose)}</dd>
           {c.use_case && (

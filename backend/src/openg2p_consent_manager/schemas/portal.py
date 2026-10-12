@@ -39,6 +39,9 @@ class Validity(BaseModel):
 
 class AssistedRequestCreate(BaseModel):
     subject_id: SubjectId
+    # Other identifiers of the subject, e.g. [{"type": "FARMER_ID", "value": "FR-0007"}];
+    # those in the CM's subject_required_identifiers must be present.
+    subject_identifiers: List[SubjectId] = []
     purpose: Purpose
     grants: List[ConsentGrant] = Field(..., min_length=1)
     validity: Optional[Validity] = None
@@ -53,6 +56,11 @@ class AssistedRequestCreate(BaseModel):
 
     @model_validator(mode="after")
     def _check(self):
+        types = [i.type.strip() for i in self.subject_identifiers]
+        if any(not t or not i.value.strip() for t, i in zip(types, self.subject_identifiers)):
+            raise ValueError("each subject identifier needs a type and a value")
+        if len(types) != len(set(types)) or self.subject_id.type in types:
+            raise ValueError("subject_identifiers name an ID type twice (or the subject's own)")
         controllers = [g.data_controller for g in self.grants]
         if len(controllers) != len(set(controllers)):
             raise ValueError("'grants' names the same data_controller more than once")
@@ -95,6 +103,10 @@ class SubjectAuthSummary(BaseModel):
     method: Optional[str] = None
     acr: Optional[str] = None
     authenticated_at: Optional[datetime] = None
+    # Demographics the identity provider returned at this login (e.g. the name
+    # as per the national ID). From the provider, NOT from any registry.
+    demographics: Optional[Dict[str, Any]] = None
+    demographics_source: Optional[str] = None
     # A later attempt failed or is running, but an earlier one succeeded.
     previous_success: Optional[Dict[str, Any]] = None
 
@@ -112,12 +124,20 @@ class SubjectAuthConfig(BaseModel):
     id_types: List[str] = []
 
 
+class RequestSettings(BaseModel):
+    """What a new assisted request needs (for the portal's form)."""
+
+    required_subject_identifiers: List[str] = []
+    subject_auth: SubjectAuthConfig
+
+
 class AssistedRequestResponse(BaseModel):
     id: str
     status: str
     method: Optional[str] = None
     use_case: Optional[str] = None
     subject_id: SubjectId
+    subject_identifiers: List[SubjectId] = []
     purpose: Dict[str, Any]
     grants: List[RequestGrant]
     valid_from: Optional[datetime] = None
@@ -156,6 +176,9 @@ class VerificationRequestList(BaseModel):
 
 class ApproveVerification(BaseModel):
     note: Optional[str] = Field(None, max_length=2000)
+    # The approver confirms the request's other subject identifiers (e.g. the
+    # Farmer ID) against the registry. Required when the request carries any.
+    identifiers_checked: bool = False
 
 
 class RejectVerification(BaseModel):
@@ -179,6 +202,7 @@ class PartnerConsentResponse(BaseModel):
     consent_id: str
     status: str
     subject_id: SubjectId
+    subject_identifiers: List[SubjectId] = []
     purpose: Dict[str, Any]
     grants: List[ConsentGrantView]
     valid_from: datetime

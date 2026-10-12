@@ -134,6 +134,7 @@ class ConsentRecordService(BaseService):
             "consent_request_id": artefact.consent_request_id,
             "partner": audience,
             "subject_id": {"type": artefact.subject_id_type, "value": artefact.subject_id_value},
+            "subject_identifiers": artefact.subject_identifiers or [],
             "purpose": artefact.purpose or {},
             "use_case": use_cases.get(artefact.consent_request_id),
             "grants": [
@@ -222,6 +223,7 @@ def _summary(s: dict) -> str:
         row("Status", e(s["status"])),
         row("Partner", e(s["partner"])),
         row("Subject", f"{e(s['subject_id']['type'])} {e(s['subject_id']['value'])}"),
+        *[row(i["type"], e(i["value"])) for i in s.get("subject_identifiers") or []],
         row("Purpose", e(str(purpose.get("code") or purpose))),
         row("Use case", e(s["use_case"] or "—")),
         row("Data", f"<ul>{grants}</ul>"),

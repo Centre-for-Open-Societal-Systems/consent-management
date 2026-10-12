@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, compositeUrl } from "../api/client";
-import { useBindings, useUseCases } from "../api/hooks";
+import { useBindings, useRequestSettings, useUseCases } from "../api/hooks";
 import type { Binding, ConsentRequestCreate, UseCase } from "../api/types";
 import { CheckboxGroup } from "../components/FormControls";
 import { ErrorNotice } from "../components/Status";
@@ -45,6 +45,10 @@ export default function NewRequestPage() {
 
   const [idType, setIdType] = useState("FAYDA_FAN");
   const [idValue, setIdValue] = useState("");
+  // Other identifiers the CM requires (e.g. FARMER_ID in Agri Stack).
+  const settings = useRequestSettings();
+  const requiredIds = (settings.data?.required_subject_identifiers ?? []).filter((t) => t !== idType);
+  const [extraIds, setExtraIds] = useState<Record<string, string>>({});
   const [purpose, setPurpose] = useState("");
   const [scopes, setScopes] = useState<Record<string, string[]>>({});
   const [validFrom, setValidFrom] = useState("");
@@ -94,6 +98,7 @@ export default function NewRequestPage() {
   // ── Validation (the API checks again against the policies) ──────────
   const problems: string[] = [];
   if (!idValue.trim()) problems.push("Enter the subject's ID.");
+  for (const t of requiredIds) if (!(extraIds[t] ?? "").trim()) problems.push(`Enter the subject's ${t}.`);
   if (!purpose) problems.push("Choose a purpose.");
   if (selected.length === 0) problems.push("Choose the data to request from at least one registry.");
   if (unbound.length)
@@ -116,6 +121,7 @@ export default function NewRequestPage() {
     mutationFn: () => {
       const body: ConsentRequestCreate = {
         subject_id: { type: idType, value: idValue.trim() },
+        subject_identifiers: requiredIds.map((t) => ({ type: t, value: (extraIds[t] ?? "").trim() })),
         purpose: { code: purpose },
         grants: selected.map((c) => ({ data_controller: c, data_scopes: scopes[c] })),
       };
@@ -202,6 +208,22 @@ export default function NewRequestPage() {
                 />
               </div>
             </div>
+            {requiredIds.map((t) => (
+              <div className="grid-2" key={t}>
+                <div className="field">
+                  <label htmlFor={`id-${t}`}>{t}</label>
+                  <input
+                    id={`id-${t}`}
+                    type="text"
+                    autoComplete="off"
+                    value={extraIds[t] ?? ""}
+                    onChange={(e) => setExtraIds({ ...extraIds, [t]: e.target.value })}
+                    placeholder={`The subject's ${t}`}
+                  />
+                  <div className="hint">Required. Consent Manager staff check it in the registry before approving.</div>
+                </div>
+              </div>
+            ))}
           </div>
 
           <div className="card">

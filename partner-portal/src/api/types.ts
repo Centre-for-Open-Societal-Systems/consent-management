@@ -70,6 +70,8 @@ export interface ConsentRequest {
   method?: string | null;
   use_case?: string | null;
   subject_id: SubjectId;
+  // Other identifiers of the subject, e.g. the Farmer ID.
+  subject_identifiers?: SubjectId[];
   purpose: Purpose | string;
   grants: Grant[];
   valid_from?: string | null;
@@ -98,6 +100,10 @@ export interface SubjectAuth {
   method?: string | null;
   acr?: string | null;
   authenticated_at?: string | null;
+  // As the identity provider returned them at this login (e.g. the name as per
+  // the national ID), not the registry's record.
+  demographics?: Record<string, unknown> | null;
+  demographics_source?: string | null;
   // A later attempt failed or is running, but an earlier one succeeded.
   previous_success?: { authenticated_at?: string | null; method?: string | null } | null;
 }
@@ -106,6 +112,11 @@ export interface SubjectAuthConfig {
   enabled: boolean;
   provider_name?: string | null;
   id_types: string[];
+}
+
+export interface RequestSettings {
+  required_subject_identifiers: string[];
+  subject_auth: SubjectAuthConfig;
 }
 
 export interface SubjectAuthStart {
@@ -117,6 +128,7 @@ export interface SubjectAuthStart {
 
 export interface ConsentRequestCreate {
   subject_id: SubjectId;
+  subject_identifiers?: SubjectId[];
   purpose: { code: string };
   grants: Grant[];
   validity?: { valid_from?: string; valid_until?: string };
@@ -150,6 +162,7 @@ export interface Consent {
   consent_id: string;
   status: ConsentStatus | string;
   subject_id: SubjectId;
+  subject_identifiers?: SubjectId[];
   purpose: Purpose | string;
   grants: ConsentGrant[];
   valid_from?: string | null;

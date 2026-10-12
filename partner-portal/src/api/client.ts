@@ -11,6 +11,7 @@ import type {
   Evidence,
   Me,
   Page,
+  RequestSettings,
   SubjectAuth,
   SubjectAuthConfig,
   SubjectAuthStart,
@@ -140,6 +141,7 @@ export const api = {
 
   // ── The subject's national-ID login (eSignet) ─────────────────────
   subjectAuthConfig: () => request<SubjectAuthConfig>(`${P}/subject-auth`),
+  requestSettings: () => request<RequestSettings>(`${P}/request-settings`),
   startSubjectAuth: (id: string) =>
     request<SubjectAuthStart>(`${P}/consent-requests/${encodeURIComponent(id)}/subject-auth`, {
       method: "POST",

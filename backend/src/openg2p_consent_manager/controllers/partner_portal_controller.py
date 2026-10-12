@@ -18,6 +18,7 @@ from ..schemas.portal import (
     PartnerConsentList,
     PartnerConsentResponse,
     PartnerMe,
+    RequestSettings,
     SubjectAuthConfig,
     SubjectAuthStart,
     SubjectAuthSummary,
@@ -93,6 +94,7 @@ class PartnerPortalController(BaseController):
         # provider redirects the browser to the callback (no partner token there:
         # the single-use state identifies the login).
         route("/subject-auth", self.subject_auth_config, "GET", SubjectAuthConfig)
+        route("/request-settings", self.request_settings, "GET", RequestSettings)
         route(
             "/consent-requests/{request_id}/subject-auth", self.start_subject_auth, "POST",
             SubjectAuthStart, 201,
@@ -237,6 +239,14 @@ class PartnerPortalController(BaseController):
         return SubjectAuthConfig(
             enabled=True, provider_name=_config.subject_auth_provider_name,
             id_types=_config.subject_auth_id_types,
+        )
+
+    async def request_settings(
+        self, user: PartnerUser = Depends(current_partner_user)
+    ) -> RequestSettings:
+        return RequestSettings(
+            required_subject_identifiers=_config.subject_required_identifiers,
+            subject_auth=await self.subject_auth_config(user),
         )
 
     async def start_subject_auth(

@@ -100,6 +100,11 @@ class AssistedConsentService(BaseService):
             # "No active policy" is a policy check here, not a missing resource.
             raise LifecycleError(422, exc.detail) from exc
 
+        given = {i.type.strip(): i.value.strip() for i in data.subject_identifiers}
+        missing = [t for t in _config.subject_required_identifiers if t not in given]
+        if missing:
+            raise LifecycleError(422, f"the subject's {', '.join(missing)} is required")
+
         now = datetime.now(timezone.utc)
         validity = data.validity
         valid_from = _aware(validity.valid_from) if validity and validity.valid_from else None
@@ -132,6 +137,7 @@ class AssistedConsentService(BaseService):
             req = ConsentRequest(
                 subject_id_type=data.subject_id.type,
                 subject_id_value=data.subject_id.value,
+                subject_identifiers=[{"type": t, "value": v} for t, v in given.items()] or None,
                 controller_id=grants[0]["data_controller"] if len(grants) == 1 else None,
                 # The binding of the first grant (as for a staff grants request).
                 partner_id=grants[0]["partner_binding_id"],
@@ -337,17 +343,24 @@ class AssistedConsentService(BaseService):
     # ── Staff verification ───────────────────────────────────────────────────
 
     async def approve(
-        self, request_id: str, verified_by: str, note: Optional[str]
+        self, request_id: str, verified_by: str, note: Optional[str],
+        identifiers_checked: bool = False,
     ) -> tuple[ConsentRequest, ConsentArtefact]:
         """Verify the evidence and create the consent: every requested grant,
         narrowed to the binding's policy as it is now (a grant left with no
-        scope is dropped)."""
+        scope is dropped). A request with other subject identifiers (e.g. the
+        Farmer ID) needs the approver to confirm them in the registry."""
         async with async_session()() as session:
             req = await session.get(ConsentRequest, request_id, with_for_update=True)
             if not self._visible(req, None):
                 raise LifecycleError(404, "not_found")
             if req.status != RequestStatus.pending_verification.value:
                 raise LifecycleError(409, f"request is '{req.status}'")
+            if req.subject_identifiers and not identifiers_checked:
+                types = ", ".join(i["type"] for i in req.subject_identifiers)
+                raise LifecycleError(
+                    422, f"confirm the subject's {types} in the registry before approving"
+                )
 
             grants, fetch_type, max_validity = [], None, None
             for rg in req.grants or []:
@@ -404,6 +417,13 @@ class AssistedConsentService(BaseService):
                 "verified_at": now.isoformat(),
                 "subject_authenticated": auth is not None,
             }
+            if req.subject_identifiers:
+                # Checked by the approver in the registry (the source of truth).
+                assurance["subject_identifiers_checked"] = {
+                    "identifiers": [i["type"] for i in req.subject_identifiers],
+                    "checked_by": verified_by,
+                    "checked_at": now.isoformat(),
+                }
             if auth is not None:
                 assurance["subject_authentication"] = {
                     "provider": auth.auth_provider,
@@ -416,6 +436,7 @@ class AssistedConsentService(BaseService):
             artefact = ConsentArtefact(
                 subject_id_type=req.subject_id_type,
                 subject_id_value=req.subject_id_value,
+                subject_identifiers=req.subject_identifiers,
                 controller_id=grants[0]["data_controller"] if len(grants) == 1 else None,
                 partner_id=grants[0]["partner_binding_id"],
                 purpose=req.purpose,

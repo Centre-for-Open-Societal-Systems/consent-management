@@ -62,6 +62,8 @@ class ConsentRequest(BaseORMModelWithId):
     valid_from: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     valid_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default=RequestStatus.pending.value, index=True)
+    # Other identifiers of the subject: [{"type": "FARMER_ID", "value": "FR-0007"}].
+    subject_identifiers: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
 
     # ── Partner portal (consent scenario 1); NULL for other requests ──
     method: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
@@ -160,6 +162,8 @@ class ConsentArtefact(BaseORMModelWithId):
 
     subject_id_type: Mapped[str] = mapped_column(String(50), index=True)
     subject_id_value: Mapped[str] = mapped_column(String(255), index=True)
+    # Other identifiers of the subject (from its request), e.g. the Farmer ID.
+    subject_identifiers: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     controller_id: Mapped[Optional[str]] = mapped_column(String(255), index=True, nullable=True)
     partner_id: Mapped[str] = mapped_column(String, index=True)
 

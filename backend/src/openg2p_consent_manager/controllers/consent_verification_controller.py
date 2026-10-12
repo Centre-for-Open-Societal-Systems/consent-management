@@ -104,7 +104,7 @@ class ConsentVerificationController(BaseController):
     ):
         try:
             req, artefact = await self.assisted.approve(
-                request_id, staff_username(identity), data.note
+                request_id, staff_username(identity), data.note, data.identifiers_checked
             )
         except LifecycleError as exc:
             return error(exc.status_code, exc.detail)

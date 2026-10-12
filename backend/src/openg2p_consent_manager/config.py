@@ -239,6 +239,12 @@ class Settings(BaseSettings):
     evidence_max_bytes: int = 10 * 1024 * 1024
     evidence_allowed_types: list[str] = ["application/pdf", "image/jpeg", "image/png"]
     evidence_max_files_per_request: int = 20
+    # Other identifiers of the subject that an assisted request must carry besides
+    # its subject ID (e.g. ["FARMER_ID"] in Agri Stack: the consent is about the
+    # person, keyed by the national ID; the Farmer ID names the farmer). Staff
+    # confirm them in the registry before approving. Empty: none required (a
+    # request may still carry some).
+    subject_required_identifiers: list[str] = []
     # Where a partner checks the CM's signature on its downloaded consent record
     # (the public JWKS of the CM partner API), named in the record's README.
     consent_record_jwks_url: str = ""

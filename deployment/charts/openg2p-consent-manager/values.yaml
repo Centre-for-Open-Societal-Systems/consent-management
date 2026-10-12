@@ -408,6 +408,10 @@ partnerPortal:
     jwksUrl: '{{ tpl .Values.partnerPortal.keycloak.internalUrl $ }}/realms/{{ tpl .Values.partnerPortal.keycloak.realm $ }}/protocol/openid-connect/certs'
   operatorRole: PARTNER_OPERATOR
   adminRole: PARTNER_ADMIN
+  # Other identifiers of the subject every assisted request must carry besides
+  # its subject ID, e.g. [FARMER_ID] in Agri Stack. Staff confirm them in the
+  # registry before approving.
+  requiredSubjectIdentifiers: []
   # Named in the consent record a partner downloads, to check the CM's signature
   # on it: the partner api's public JWKS.
   consentRecordJwksUrl: 'https://{{ tpl .Values.global.consentManagerPartnerHostname $ }}/api/consent-manager-partner/.well-known/jwks.json'

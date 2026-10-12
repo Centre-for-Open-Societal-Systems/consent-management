@@ -294,6 +294,14 @@ class Initializer(BaseInitializer):
                         "ON consent_requests (partner_audience)"
                     )
                 )
+                # Other identifiers of the subject (e.g. the Farmer ID).
+                for table in ("consent_requests", "consent_artefacts"):
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+                            "subject_identifiers JSONB"
+                        )
+                    )
                 # How the subject confirmed, and the request a consent came from.
                 await conn.execute(
                     text("ALTER TABLE consent_artefacts ADD COLUMN IF NOT EXISTS assurance JSONB")

@@ -217,6 +217,9 @@ export interface VerificationRequest {
   method?: string | null;
   use_case?: string | null;
   subject_id: { type: string; value: string };
+  // Other identifiers of the subject (e.g. the Farmer ID); the approver checks
+  // them in the registry.
+  subject_identifiers?: { type: string; value: string }[];
   purpose: Purpose | string;
   grants: Grant[];
   valid_from?: string | null;
@@ -238,6 +241,9 @@ export interface VerificationRequest {
     acr?: string | null;
     authenticated_at?: string | null;
     started_by?: string | null;
+    // As the identity provider returned them at this login, not the registry's.
+    demographics?: Record<string, unknown> | null;
+    demographics_source?: string | null;
     previous_success?: { authenticated_at?: string | null; method?: string | null } | null;
   } | null;
   evidence?: VerificationEvidence[];

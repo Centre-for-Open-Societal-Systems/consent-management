@@ -217,6 +217,9 @@ def test_authenticated_subject_then_submit_and_approve(call, portal, esignet, as
     status, s = pc("GET", f"/consent-requests/{rid}/subject-auth")
     assert s["status"] == "success" and s["method"] == "OTP"
     assert s["acr"] == "mosip:idp:acr:generated-code" and s["authenticated_at"]
+    # Demographics as the identity provider returned them, labelled with it.
+    assert s["demographics"] == {"name": "Abebe Kebede"}
+    assert s["demographics_source"] == "National ID (eSignet)"
 
     status, req = pc("POST", f"/consent-requests/{rid}/submit")
     assert status == 200, req

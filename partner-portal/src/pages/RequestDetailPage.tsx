@@ -112,6 +112,12 @@ export default function RequestDetailPage() {
             <dd>
               <code className="mono">{r.subject_id?.type}</code> {r.subject_id?.value}
             </dd>
+            {(r.subject_identifiers ?? []).map((i) => (
+              <span key={i.type} style={{ display: "contents" }}>
+                <dt>{i.type}</dt>
+                <dd>{i.value}</dd>
+              </span>
+            ))}
             <dt>Purpose</dt>
             <dd>{purposeLabel(r.purpose)}</dd>
             {r.use_case && (
@@ -583,6 +589,18 @@ function SubjectAuthCard({
                 {formatDateTime(s.authenticated_at)}
                 {s.method ? ` · ${s.method}` : ""}
               </dd>
+              {s.demographics &&
+                Object.entries(s.demographics).map(([k, v]) => (
+                  <span key={k} style={{ display: "contents" }}>
+                    <dt>{k.replace(/_/g, " ")}</dt>
+                    <dd>
+                      {typeof v === "string" ? v : JSON.stringify(v)}
+                      <div className="muted" style={{ fontSize: 12 }}>
+                        As per {s.demographics_source ?? providerName}, not the registry
+                      </div>
+                    </dd>
+                  </span>
+                ))}
             </>
           )}
           {s.error && (

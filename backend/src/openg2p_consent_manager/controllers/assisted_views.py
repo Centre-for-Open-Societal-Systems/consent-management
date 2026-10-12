@@ -33,6 +33,7 @@ def request_fields(req, consent_id: Optional[str] = None, subject_auth: Optional
         "method": req.method,
         "use_case": req.use_case,
         "subject_id": SubjectId(type=req.subject_id_type, value=req.subject_id_value),
+        "subject_identifiers": [SubjectId(**i) for i in (req.subject_identifiers or [])],
         "purpose": req.purpose or {},
         "grants": [
             RequestGrant(data_controller=g["data_controller"], data_scopes=g["data_scopes"])
@@ -77,6 +78,7 @@ def consent_view(artefact, use_cases: dict) -> PartnerConsentResponse:
         consent_id=artefact.id,
         status=artefact_status(artefact),
         subject_id=SubjectId(type=artefact.subject_id_type, value=artefact.subject_id_value),
+        subject_identifiers=[SubjectId(**i) for i in (artefact.subject_identifiers or [])],
         purpose=artefact.purpose or {},
         grants=grants,
         valid_from=artefact.valid_from,

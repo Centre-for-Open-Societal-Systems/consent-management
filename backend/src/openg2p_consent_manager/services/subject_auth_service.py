@@ -312,9 +312,15 @@ class SubjectAuthService(BaseService):
                 "completed_at": row.completed_at,
             }
             if ctx is not None:
+                claims = ctx.verified_claims or {}
                 summary.update(
                     provider=ctx.auth_provider, method=ctx.auth_method,
-                    acr=(ctx.verified_claims or {}).get("acr"), authenticated_at=ctx.auth_timestamp,
+                    acr=claims.get("acr"), authenticated_at=ctx.auth_timestamp,
+                    # What the identity provider returned (e.g. the name as per
+                    # the national ID), not the registry's record.
+                    demographics={k: v for k, v in claims.items()
+                                  if k not in ("acr", "amr", "auth_time")} or None,
+                    demographics_source=ctx.auth_provider,
                 )
             previous = out.get(row.consent_request_id)
             if previous and previous["status"] == "success" and summary["status"] != "success":

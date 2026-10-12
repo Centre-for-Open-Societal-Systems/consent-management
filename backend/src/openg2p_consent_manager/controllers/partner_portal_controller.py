@@ -24,6 +24,7 @@ from ..schemas.portal import (
 )
 from ..services import (
     AssistedConsentService,
+    ConsentRecordService,
     ConsentService,
     EvidenceError,
     LifecycleError,
@@ -53,6 +54,7 @@ class PartnerPortalController(BaseController):
         self.assisted = AssistedConsentService.get_component()
         self.consents = ConsentService.get_component()
         self.subject_auth = SubjectAuthService.get_component()
+        self.records = ConsentRecordService.get_component()
         self.router.prefix += "/consent/v1/partner-portal"
         self.router.tags += ["Partner portal"]
 
@@ -106,6 +108,9 @@ class PartnerPortalController(BaseController):
         route("/consents", self.list_consents, "GET", PartnerConsentList)
         route("/consents/{consent_id}", self.get_consent, "GET", PartnerConsentResponse)
         route("/consents/{consent_id}/receipt", self.get_receipt, "GET")
+        # The partner's copy for its records: receipt + evidence + a CM-signed
+        # statement tying them together (a ZIP; the consent is not changed).
+        route("/consents/{consent_id}/record", self.get_record, "GET")
 
     async def _request_response(self, req) -> AssistedRequestResponse:
         ids = await self.assisted.consent_ids([req.id])
@@ -306,6 +311,25 @@ class PartnerPortalController(BaseController):
         if receipt is None:
             return not_found()
         return JSONResponse(content=receipt.document)
+
+    async def get_record(
+        self, consent_id: str, user: PartnerUser = Depends(current_partner_user)
+    ):
+        try:
+            built = await self.records.build(user.partner_id, consent_id)
+        except EvidenceError as exc:
+            return error(exc.status_code, exc.detail)
+        if built is None:
+            return not_found()
+        filename, data = built
+        return Response(
+            content=data, media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "no-store",
+            },
+        )
 
 
 def _callback_page(ok: bool, message: str, status_code: int = 200) -> HTMLResponse:

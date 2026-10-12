@@ -151,6 +151,9 @@ export const api = {
   listConsents: (p: ListParams = {}) => request<Page<Consent>>(`${P}/consents${qs({ ...p })}`),
   getConsent: (id: string) => request<Consent>(`${P}/consents/${encodeURIComponent(id)}`),
   receipt: (id: string) => requestBlob(`${P}/consents/${encodeURIComponent(id)}/receipt`),
+  // The partner's copy for its records: a ZIP with the receipt, the signed form
+  // and the CM's signed statement tying them together.
+  record: (id: string) => requestBlob(`${P}/consents/${encodeURIComponent(id)}/record`),
 };
 
 // ── Composite (public, no auth) ──────────────────────────────────────

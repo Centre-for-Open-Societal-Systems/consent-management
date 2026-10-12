@@ -39,6 +39,7 @@ from .services import (
     AssistedConsentService,
     AweClient,
     AweWebhookService,
+    ConsentRecordService,
     ConsentService,
     CryptoService,
     EvidenceService,
@@ -70,7 +71,8 @@ class Initializer(BaseInitializer):
         LifecycleService()
         EvidenceService()
         SubjectAuthService()
-        AssistedConsentService()  # depends on Lifecycle/Evidence/Receipt
+        AssistedConsentService()
+        ConsentRecordService()  # depends on AssistedConsentService, CryptoService  # depends on Lifecycle/Evidence/Receipt
         AweClient()
         AweWebhookService()  # depends on PartnerService
 

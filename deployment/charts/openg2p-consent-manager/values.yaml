@@ -402,6 +402,9 @@ partnerPortal:
     jwksUrl: '{{ tpl .Values.partnerPortal.keycloak.internalUrl $ }}/realms/{{ tpl .Values.partnerPortal.keycloak.realm $ }}/protocol/openid-connect/certs'
   operatorRole: PARTNER_OPERATOR
   adminRole: PARTNER_ADMIN
+  # Named in the consent record a partner downloads, to check the CM's signature
+  # on it: the partner api's public JWKS.
+  consentRecordJwksUrl: 'https://{{ tpl .Values.global.consentManagerPartnerHostname $ }}/api/consent-manager-partner/.well-known/jwks.json'
   # The subject's national-ID login during an assisted request (consent
   # scenario 1, phase 2): eSignet, as the registry's beneficiary authentication
   # for credentials. When on it is MANDATORY: a request cannot be submitted

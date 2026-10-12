@@ -1,6 +1,7 @@
 from .assisted_service import AssistedConsentService, artefact_status
 from .awe_client import AweClient, AweClientError
 from .awe_webhook_service import AweWebhookService, WebhookError
+from .consent_record_service import ConsentRecordService
 from .consent_service import ConsentService
 from .crypto_service import CryptoService
 from .evidence_service import EvidenceError, EvidenceService
@@ -34,6 +35,7 @@ __all__ = [
     "SubjectAuthService",
     "VerificationService",
     "ConsentService",
+    "ConsentRecordService",
     "LifecycleService",
     "LifecycleError",
     "EvidenceService",

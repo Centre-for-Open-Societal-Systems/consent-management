@@ -239,6 +239,9 @@ class Settings(BaseSettings):
     evidence_max_bytes: int = 10 * 1024 * 1024
     evidence_allowed_types: list[str] = ["application/pdf", "image/jpeg", "image/png"]
     evidence_max_files_per_request: int = 20
+    # Where a partner checks the CM's signature on its downloaded consent record
+    # (the public JWKS of the CM partner API), named in the record's README.
+    consent_record_jwks_url: str = ""
 
     # ── Subject authentication with national ID (consent scenario 1, phase 2) ──
     # The subject (e.g. a farmer at the bank) proves who they are through an

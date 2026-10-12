@@ -13,6 +13,20 @@ export default function ConsentDetailPage() {
   });
   const [downloading, setDownloading] = useState(false);
   const [receiptError, setReceiptError] = useState<string | null>(null);
+  const [recordBusy, setRecordBusy] = useState(false);
+
+  const downloadRecord = async () => {
+    setReceiptError(null);
+    setRecordBusy(true);
+    try {
+      const { blob, filename } = await api.record(id);
+      saveBlob(blob, filename ?? `consent-record-${id}.zip`);
+    } catch (e) {
+      setReceiptError(e instanceof ApiError ? e.message : "Could not download the consent record.");
+    } finally {
+      setRecordBusy(false);
+    }
+  };
 
   const downloadReceipt = async () => {
     setReceiptError(null);
@@ -55,7 +69,15 @@ export default function ConsentDetailPage() {
         </div>
         <div className="row">
           <StatusBadge status={c.status} />
-          <button className="btn-primary" onClick={downloadReceipt} disabled={downloading}>
+          <button
+            className="btn-primary"
+            onClick={downloadRecord}
+            disabled={recordBusy}
+            title="For your records: the receipt, the signed form and the Consent Manager's signed statement tying them together"
+          >
+            {recordBusy ? "Preparing…" : "Download consent record"}
+          </button>
+          <button className="btn-secondary" onClick={downloadReceipt} disabled={downloading}>
             {downloading ? "Downloading…" : "Download receipt"}
           </button>
           <Link to="/consents" className="btn-secondary">

@@ -55,6 +55,8 @@ install's manifests are unchanged. Call with the root context.
   value: {{ tpl $p.keycloak.issuerUrl . | quote }}
 - name: CONSENT_MANAGER_PARTNER_AUTH_JWKS_URL
   value: {{ tpl $p.keycloak.jwksUrl . | quote }}
+- name: CONSENT_MANAGER_CONSENT_RECORD_JWKS_URL
+  value: {{ tpl $p.consentRecordJwksUrl . | quote }}
 {{- $sa := $p.subjectAuth | default dict }}
 {{- if $sa.enabled }}
 - name: CONSENT_MANAGER_SUBJECT_AUTH_ENABLED

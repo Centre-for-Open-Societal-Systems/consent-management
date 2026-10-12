@@ -116,8 +116,14 @@ class FakeEsignet:
                     "individual_id": self.individual_id, "name": "Abebe Kebede", "exp": int(time.time()) + 300,
                     "phone_number": "+251900000000"}
             info.update(self.userinfo_overrides)
-            body = (self._sign(info, self.userinfo_key, kid="identity-system-key") if self.userinfo_key
-                    else self._sign(info))
+            if self.userinfo_key:
+                # As the mock identity system: its own iss, aud = client, no exp.
+                if "exp" not in self.userinfo_overrides:
+                    info.pop("exp", None)
+                info.setdefault("iss", f"{ESIGNET}/v1/esignet")
+                body = self._sign(info, self.userinfo_key, kid="identity-system-key")
+            else:
+                body = self._sign(info)
             return httpx.Response(200, content=body, headers={"content-type": "application/jwt"})
         return httpx.Response(404)
 
@@ -354,8 +360,13 @@ def test_userinfo_signed_by_an_unpublished_key(portal, esignet, keys, as_partner
     assert "Authenticated" in page
     assert pc("GET", f"/consent-requests/{rid}/subject-auth")[1]["status"] == "success"
 
+    # The identity system's own issuer (not eSignet's) is fine.
+    esignet.userinfo_overrides = {"iss": f"{ESIGNET}/v1/esignet"}
+    rid = create(pc)["id"]
+    login(pc, rid, esignet, callback)
+    assert pc("GET", f"/consent-requests/{rid}/subject-auth")[1]["status"] == "success"
+
     for change, fragment in (({"aud": "someone-else"}, "not for this client"),
-                             ({"iss": "https://evil.test"}, "unexpected issuer"),
                              ({"exp": 1}, "expired"),
                              ({"sub": "another-pairwise"}, "another person"),
                              ({"individual_id": "999999999999"}, "not the request")):
@@ -364,4 +375,18 @@ def test_userinfo_signed_by_an_unpublished_key(portal, esignet, keys, as_partner
         login(pc, rid, esignet, callback)
         s = pc("GET", f"/consent-requests/{rid}/subject-auth")[1]
         assert s["status"] == "failed" and fragment in s["error"], (change, s)
+
+
+def test_a_callback_that_never_finished_reads_as_failed():
+    from datetime import datetime, timedelta, timezone
+
+    from openg2p_consent_manager.models import SubjectAuthSession
+    from openg2p_consent_manager.services import SubjectAuthService
+
+    row = SubjectAuthSession(consent_request_id="r", state="s", nonce="n", code_verifier="v",
+                             status="processing",
+                             expires_at=datetime.now(timezone.utc) - timedelta(minutes=10))
+    assert SubjectAuthService.session_status(row) == "failed"
+    row.expires_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+    assert SubjectAuthService.session_status(row) == "processing"
 

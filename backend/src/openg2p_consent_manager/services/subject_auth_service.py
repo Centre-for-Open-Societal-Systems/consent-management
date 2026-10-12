@@ -14,9 +14,9 @@ the subject matched on ``individual_id``), with these checks on every login:
 * the userinfo answer comes straight from the provider over HTTPS with the
   access token, which is what makes it authentic (OIDC Core 5.3.2). When it is a
   JWT signed with a key the provider publishes, its signature is checked too;
-  eSignet signs it with the identity system's key, which it does not publish,
-  so then only its claims are checked. Either way its ``iss`` / ``aud`` (when
-  present) must be the provider and this client, and its ``sub`` the ID token's;
+  eSignet passes on the identity system's answer, signed with that system's key
+  (not published by eSignet) and with that system's own ``iss``; then its
+  ``aud`` must be this client. Either way its ``sub`` must be the ID token's;
 * the subject claim (the national ID) must equal the request's subject ID.
 
 Only acr / amr / auth_time and the configured claims are kept; the tokens are
@@ -173,9 +173,11 @@ class SubjectAuthService(BaseService):
     async def _userinfo_claims(self, token: str, meta: dict, client_id: str) -> dict:
         """Claims of a JWT userinfo answer (fetched from the provider over HTTPS).
 
-        Signature checked when the key is one the provider publishes; otherwise
-        (eSignet: the identity system's key) the HTTPS answer is what vouches for
-        it. iss / aud / exp are checked whenever present."""
+        Signature, iss and aud checked when the key is one the provider
+        publishes. Otherwise (eSignet: the identity system's signed answer, whose
+        ``iss`` is that system's, e.g. https://<esignet>/v1/esignet, and which has
+        no ``exp``) the HTTPS answer vouches for it; ``aud`` must still be this
+        client, ``exp`` is checked if present, and the caller checks ``sub``."""
         try:
             kid = jwt.get_unverified_header(token).get("kid")
             keys = await self._jwk_set(meta["jwks_uri"])
@@ -184,8 +186,6 @@ class SubjectAuthService(BaseService):
             info = jwt.decode(token, options={"verify_signature": False})
         except Exception as exc:
             raise LifecycleError(401, f"the userinfo answer is not valid: {exc}") from exc
-        if info.get("iss") and info["iss"] != meta["issuer"]:
-            raise LifecycleError(401, "the userinfo answer is not valid: unexpected issuer")
         aud = info.get("aud")
         if aud and client_id not in (aud if isinstance(aud, list) else [aud]):
             raise LifecycleError(401, "the userinfo answer is not valid: not for this client")
@@ -265,6 +265,11 @@ class SubjectAuthService(BaseService):
     def session_status(row: SubjectAuthSession) -> str:
         if row.status == SubjectAuthStatus.pending.value and _aware(row.expires_at) <= _now():
             return "expired"
+        # Claimed by a callback that never finished (the pod stopped mid-way).
+        if row.status == SubjectAuthStatus.processing.value and _aware(row.expires_at) + timedelta(
+            seconds=_config.subject_auth_http_timeout_seconds * 4
+        ) <= _now():
+            return "failed"
         return row.status
 
     @staticmethod

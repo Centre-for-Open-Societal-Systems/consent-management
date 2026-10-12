@@ -22,7 +22,7 @@ def not_found() -> JSONResponse:
     return error(404, "not_found")
 
 
-def request_fields(req, consent_id: Optional[str] = None) -> dict:
+def request_fields(req, consent_id: Optional[str] = None, subject_auth: Optional[dict] = None) -> dict:
     grants = req.grants or (
         [{"data_controller": req.controller_id, "data_scopes": req.requested_scopes or []}]
         if req.controller_id else []
@@ -47,6 +47,7 @@ def request_fields(req, consent_id: Optional[str] = None) -> dict:
         "verified_at": req.verified_at,
         "verification_note": req.verification_note,
         "consent_id": consent_id,
+        "subject_authentication": subject_auth,
     }
 
 

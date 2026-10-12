@@ -13,6 +13,8 @@ from .consent import (
     RequestMethod,
     RequestStatus,
     RevocationRecord,
+    SubjectAuthSession,
+    SubjectAuthStatus,
 )
 from .exchange import IssuedReceipt
 from .partner import (
@@ -38,6 +40,8 @@ __all__ = [
     "ConsentEvidence",
     "EvidenceKind",
     "AuthContext",
+    "SubjectAuthSession",
+    "SubjectAuthStatus",
     "ConsentArtefact",
     "ArtefactStatus",
     "ArtefactSource",

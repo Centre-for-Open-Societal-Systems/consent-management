@@ -82,6 +82,36 @@ class EvidenceResponse(BaseModel):
     uploaded_at: datetime
 
 
+class SubjectAuthSummary(BaseModel):
+    """The latest national-ID login of the request's subject."""
+
+    authentication_id: str
+    status: str  # pending | processing | success | failed | expired
+    error: Optional[str] = None
+    started_by: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    provider: Optional[str] = None
+    method: Optional[str] = None
+    acr: Optional[str] = None
+    authenticated_at: Optional[datetime] = None
+    # A later attempt failed or is running, but an earlier one succeeded.
+    previous_success: Optional[Dict[str, Any]] = None
+
+
+class SubjectAuthStart(BaseModel):
+    authentication_id: str
+    authorization_url: str
+    provider_name: str
+    expires_at: datetime
+
+
+class SubjectAuthConfig(BaseModel):
+    enabled: bool
+    provider_name: Optional[str] = None
+    id_types: List[str] = []
+
+
 class AssistedRequestResponse(BaseModel):
     id: str
     status: str
@@ -99,6 +129,7 @@ class AssistedRequestResponse(BaseModel):
     verified_at: Optional[datetime] = None
     verification_note: Optional[str] = None
     consent_id: Optional[str] = None
+    subject_authentication: Optional[SubjectAuthSummary] = None
 
 
 class AssistedRequestDetail(AssistedRequestResponse):

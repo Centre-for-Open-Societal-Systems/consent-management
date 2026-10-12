@@ -402,6 +402,48 @@ partnerPortal:
     jwksUrl: '{{ tpl .Values.partnerPortal.keycloak.internalUrl $ }}/realms/{{ tpl .Values.partnerPortal.keycloak.realm $ }}/protocol/openid-connect/certs'
   operatorRole: PARTNER_OPERATOR
   adminRole: PARTNER_ADMIN
+  # The subject's national-ID login during an assisted request (consent
+  # scenario 1, phase 2): eSignet, as the registry's beneficiary authentication
+  # for credentials. When on it is MANDATORY: a request cannot be submitted
+  # until its subject has authenticated (the signed form is still required).
+  # Needs eSignet (and, for testing, the mock identity system) in the namespace.
+  subjectAuth:
+    enabled: false
+    providerName: National ID (eSignet)
+    esignetHostname: 'esignet.{{ .Values.global.namespace | default .Release.Namespace }}.openg2p.org'
+    discoveryUrl: 'https://{{ tpl .Values.partnerPortal.subjectAuth.esignetHostname $ }}/.well-known/openid-configuration'
+    # The CM's OIDC client in eSignet (registered by the job below).
+    clientId: '{{ .Release.Name }}-consent-partner-portal'
+    # eSignet sends the browser back here: the portal host routes
+    # /consent/v1/partner-portal/ to the CM api.
+    redirectUri: 'https://{{ tpl .Values.global.consentPartnerPortalHostname $ }}/consent/v1/partner-portal/subject-auth/callback'
+    acrValues: 'mosip:idp:acr:generated-code'
+    # Subject ID types that are the national ID (only these can log in).
+    idTypes: [FAYDA_FAN, NATIONAL_ID, national_id]
+    # The client's RSA key (private_key_jwt), kept in this Secret (key client.pem)
+    # and mounted into the api; generated once by the job, never rotated by it.
+    keySecretName: '{{ .Release.Name }}-subject-auth-client-key'
+    keyMountPath: /subject-auth
+    # Registers the client in eSignet's database (its client API needs a scope
+    # an install cannot obtain): a regular Job, re-run on each upgrade, that
+    # waits for eSignet's tables. Turn off where another system owns eSignet.
+    bootstrap:
+      enabled: true
+      esignetDbName: mosip_esignet
+      esignetDbUser: esignetuser
+      esignetDbSecret: esignet-db-user
+      esignetDbSecretKey: esignet-db-user-password
+      # Claims the client may ask for (individual_id is what is matched).
+      claims: [name, individual_id]
+      keygenImage: python:3.12-slim
+      psqlImage: postgres:16-alpine
+      kubectlImage: alpine/k8s:1.31.0
+      waitSeconds: 1200
+      backoffLimit: 3
+      ttlSecondsAfterFinished: 86400
+      resources:
+        requests: {cpu: 10m, memory: 32Mi}
+        limits: {cpu: 200m, memory: 128Mi}
   # Test partner users (testing only). For each entry the chart keeps a
   # generated password in the Secret below (key = username; kept across
   # upgrades and uninstall). keycloak-init cannot set user attributes or read

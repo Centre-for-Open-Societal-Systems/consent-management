@@ -101,6 +101,33 @@ class ConsentEvidence(BaseORMModelWithId):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class SubjectAuthStatus(str, Enum):
+    pending = "pending"  # login started, waiting for the provider's callback
+    processing = "processing"  # callback received (the state is used up)
+    success = "success"
+    failed = "failed"
+
+
+class SubjectAuthSession(BaseORMModelWithId):
+    """One national-ID login of a request's subject: started by a partner user,
+    completed by the provider's callback. ``state`` is single-use (claimed with
+    an atomic UPDATE); ``nonce`` and the PKCE ``code_verifier`` never leave the
+    CM. On success ``auth_context_id`` names the AuthContext recorded."""
+
+    __tablename__ = "subject_auth_sessions"
+
+    consent_request_id: Mapped[str] = mapped_column(String, index=True)
+    state: Mapped[str] = mapped_column(String(128), unique=True)
+    nonce: Mapped[str] = mapped_column(String(128))
+    code_verifier: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(20), default=SubjectAuthStatus.pending.value)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    started_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    auth_context_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+
 class AuthContext(BaseORMModelWithId):
     """Built from a validated OIDC ID token. The raw token is never stored."""
 

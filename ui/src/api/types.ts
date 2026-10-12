@@ -229,6 +229,17 @@ export interface VerificationRequest {
   verification_note?: string | null;
   consent_id?: string | null;
   partner_audience?: string | null;
+  // The subject's latest national-ID login (eSignet), if the CM has it on.
+  subject_authentication?: {
+    status: string;
+    error?: string | null;
+    provider?: string | null;
+    method?: string | null;
+    acr?: string | null;
+    authenticated_at?: string | null;
+    started_by?: string | null;
+    previous_success?: { authenticated_at?: string | null; method?: string | null } | null;
+  } | null;
   evidence?: VerificationEvidence[];
 }
 

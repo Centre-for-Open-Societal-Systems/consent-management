@@ -14,6 +14,7 @@ from .partner_service import (
 )
 from .policy_service import PolicyResult, PolicyService
 from .receipt_service import ReceiptService
+from .subject_auth_service import SubjectAuthService
 from .verification_service import VerificationService
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "PolicyService",
     "PolicyResult",
     "ReceiptService",
+    "SubjectAuthService",
     "VerificationService",
     "ConsentService",
     "LifecycleService",

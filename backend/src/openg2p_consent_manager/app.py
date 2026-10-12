@@ -33,6 +33,7 @@ from .models import (
     Partner,
     PartnerPolicy,
     RevocationRecord,
+    SubjectAuthSession,
 )
 from .services import (
     AssistedConsentService,
@@ -46,6 +47,7 @@ from .services import (
     PartnerService,
     PolicyService,
     ReceiptService,
+    SubjectAuthService,
     VerificationService,
 )
 
@@ -67,6 +69,7 @@ class Initializer(BaseInitializer):
         ConsentService()
         LifecycleService()
         EvidenceService()
+        SubjectAuthService()
         AssistedConsentService()  # depends on Lifecycle/Evidence/Receipt
         AweClient()
         AweWebhookService()  # depends on PartnerService
@@ -110,6 +113,7 @@ class Initializer(BaseInitializer):
                 ConsentRequest,
                 ConsentEvidence,
                 AuthContext,
+                SubjectAuthSession,
                 ConsentArtefact,
                 ConsentReceipt,
                 RevocationRecord,

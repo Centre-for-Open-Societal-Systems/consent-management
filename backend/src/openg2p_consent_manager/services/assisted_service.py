@@ -33,6 +33,7 @@ from .evidence_service import EvidenceError, EvidenceService
 from .lifecycle_service import LifecycleError, LifecycleService
 from .partner_service import PartnerService
 from .receipt_service import ReceiptService
+from .subject_auth_service import SubjectAuthService
 
 _config = Settings.get_config()
 _logger = logging.getLogger(_config.logging_default_logger_name)
@@ -59,6 +60,7 @@ class AssistedConsentService(BaseService):
         self.lifecycle = LifecycleService.get_component()
         self.receipts = ReceiptService.get_component()
         self.evidence = EvidenceService.get_component()
+        self.subject_auth = SubjectAuthService.get_component()
 
     # ── Partner: what it may ask for ─────────────────────────────────────────
 
@@ -207,7 +209,8 @@ class AssistedConsentService(BaseService):
             return {rid: cid for rid, cid in rows.all()}
 
     async def submit(self, request_id: str, audience: str) -> ConsentRequest:
-        """pending → pending_verification; needs a signed form."""
+        """pending → pending_verification; needs a signed form and, when national
+        ID authentication is enabled, the subject's successful authentication."""
         async with async_session()() as session:
             req = await session.get(ConsentRequest, request_id, with_for_update=True)
             if not self._visible(req, audience):
@@ -224,6 +227,12 @@ class AssistedConsentService(BaseService):
             ).scalar()
             if not forms:
                 raise LifecycleError(409, "upload the signed consent form before submitting")
+            if self.subject_auth.enabled and await self.subject_auth.authenticated(
+                session, request_id
+            ) is None:
+                raise LifecycleError(
+                    409, "the subject must authenticate with national ID before submitting"
+                )
             req.status = RequestStatus.pending_verification.value
             req.submitted_at = datetime.now(timezone.utc)
             await session.commit()
@@ -377,6 +386,9 @@ class AssistedConsentService(BaseService):
                     .distinct()
                 )
             ).scalars().all()
+            auth = await self.subject_auth.authenticated(session, request_id)
+            if self.subject_auth.enabled and auth is None:
+                raise LifecycleError(409, "the subject has not authenticated with national ID")
             now = datetime.now(timezone.utc)
             valid_from = _aware(req.valid_from) if req.valid_from else now
             valid_until = (
@@ -390,8 +402,17 @@ class AssistedConsentService(BaseService):
                 "evidence": sorted(set(kinds)),
                 "verified_by": verified_by,
                 "verified_at": now.isoformat(),
-                "subject_authenticated": False,
+                "subject_authenticated": auth is not None,
             }
+            if auth is not None:
+                assurance["subject_authentication"] = {
+                    "provider": auth.auth_provider,
+                    "method": auth.auth_method,
+                    "acr": (auth.verified_claims or {}).get("acr"),
+                    "authenticated_at": _aware(auth.auth_timestamp).isoformat()
+                    if auth.auth_timestamp else None,
+                    "auth_context_id": auth.id,
+                }
             artefact = ConsentArtefact(
                 subject_id_type=req.subject_id_type,
                 subject_id_value=req.subject_id_value,

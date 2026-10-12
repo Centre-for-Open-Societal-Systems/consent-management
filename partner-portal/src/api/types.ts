@@ -81,8 +81,38 @@ export interface ConsentRequest {
   verified_at?: string | null;
   verification_note?: string | null;
   consent_id?: string | null;
+  // The subject's latest national-ID login (null: none started).
+  subject_authentication?: SubjectAuth | null;
   // Present on GET /consent-requests/{id}.
   evidence?: Evidence[];
+}
+
+export interface SubjectAuth {
+  authentication_id: string;
+  status: "pending" | "processing" | "success" | "failed" | "expired" | string;
+  error?: string | null;
+  started_by?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  provider?: string | null;
+  method?: string | null;
+  acr?: string | null;
+  authenticated_at?: string | null;
+  // A later attempt failed or is running, but an earlier one succeeded.
+  previous_success?: { authenticated_at?: string | null; method?: string | null } | null;
+}
+
+export interface SubjectAuthConfig {
+  enabled: boolean;
+  provider_name?: string | null;
+  id_types: string[];
+}
+
+export interface SubjectAuthStart {
+  authentication_id: string;
+  authorization_url: string;
+  provider_name: string;
+  expires_at: string;
 }
 
 export interface ConsentRequestCreate {

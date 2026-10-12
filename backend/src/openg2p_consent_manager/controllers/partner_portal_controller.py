@@ -1,8 +1,9 @@
+import html
 import logging
 from typing import Literal, Optional
 
 from fastapi import Depends, File, Form, Query, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from openg2p_fastapi_common.controller import BaseController
 
 from ..auth import PartnerUser, current_partner_user
@@ -17,12 +18,16 @@ from ..schemas.portal import (
     PartnerConsentList,
     PartnerConsentResponse,
     PartnerMe,
+    SubjectAuthConfig,
+    SubjectAuthStart,
+    SubjectAuthSummary,
 )
 from ..services import (
     AssistedConsentService,
     ConsentService,
     EvidenceError,
     LifecycleError,
+    SubjectAuthService,
 )
 from .assisted_views import (
     consent_view,
@@ -47,6 +52,7 @@ class PartnerPortalController(BaseController):
         super().__init__(**kwargs)
         self.assisted = AssistedConsentService.get_component()
         self.consents = ConsentService.get_component()
+        self.subject_auth = SubjectAuthService.get_component()
         self.router.prefix += "/consent/v1/partner-portal"
         self.router.tags += ["Partner portal"]
 
@@ -81,13 +87,30 @@ class PartnerPortalController(BaseController):
             "/consent-requests/{request_id}/cancel", self.cancel, "POST",
             AssistedRequestResponse,
         )
+        # The subject's national-ID login (eSignet): start it, follow it; the
+        # provider redirects the browser to the callback (no partner token there:
+        # the single-use state identifies the login).
+        route("/subject-auth", self.subject_auth_config, "GET", SubjectAuthConfig)
+        route(
+            "/consent-requests/{request_id}/subject-auth", self.start_subject_auth, "POST",
+            SubjectAuthStart, 201,
+        )
+        route(
+            "/consent-requests/{request_id}/subject-auth", self.subject_auth_status, "GET",
+            SubjectAuthSummary,
+        )
+        self.router.add_api_route(
+            "/subject-auth/callback", self.subject_auth_callback, methods=["GET"],
+            response_class=HTMLResponse, include_in_schema=True,
+        )
         route("/consents", self.list_consents, "GET", PartnerConsentList)
         route("/consents/{consent_id}", self.get_consent, "GET", PartnerConsentResponse)
         route("/consents/{consent_id}/receipt", self.get_receipt, "GET")
 
     async def _request_response(self, req) -> AssistedRequestResponse:
         ids = await self.assisted.consent_ids([req.id])
-        return AssistedRequestResponse(**request_fields(req, ids.get(req.id)))
+        auth = await self.subject_auth.summaries([req.id])
+        return AssistedRequestResponse(**request_fields(req, ids.get(req.id), auth.get(req.id)))
 
     async def me(self, user: PartnerUser = Depends(current_partner_user)) -> PartnerMe:
         return PartnerMe(
@@ -121,9 +144,13 @@ class PartnerPortalController(BaseController):
             audience=user.partner_id, status=status, limit=limit, offset=offset
         )
         ids = await self.assisted.consent_ids([r.id for r in rows])
+        auth = await self.subject_auth.summaries([r.id for r in rows])
         return AssistedRequestList(
             total=total,
-            items=[AssistedRequestResponse(**request_fields(r, ids.get(r.id))) for r in rows],
+            items=[
+                AssistedRequestResponse(**request_fields(r, ids.get(r.id), auth.get(r.id)))
+                for r in rows
+            ],
         )
 
     async def get_request(
@@ -133,8 +160,9 @@ class PartnerPortalController(BaseController):
         if req is None:
             return not_found()
         ids = await self.assisted.consent_ids([req.id])
+        auth = await self.subject_auth.summaries([req.id])
         return AssistedRequestDetail(
-            **request_fields(req, ids.get(req.id)),
+            **request_fields(req, ids.get(req.id), auth.get(req.id)),
             evidence=evidence_list(await self.assisted.list_evidence(req.id)),
         )
 
@@ -196,6 +224,58 @@ class PartnerPortalController(BaseController):
             return error(exc.status_code, exc.detail)
         return await self._request_response(req)
 
+    async def subject_auth_config(
+        self, user: PartnerUser = Depends(current_partner_user)
+    ) -> SubjectAuthConfig:
+        if not self.subject_auth.enabled:
+            return SubjectAuthConfig(enabled=False)
+        return SubjectAuthConfig(
+            enabled=True, provider_name=_config.subject_auth_provider_name,
+            id_types=_config.subject_auth_id_types,
+        )
+
+    async def start_subject_auth(
+        self, request_id: str, user: PartnerUser = Depends(current_partner_user)
+    ):
+        try:
+            row, url = await self.subject_auth.start(request_id, user.partner_id, user.username)
+        except LifecycleError as exc:
+            return error(exc.status_code, exc.detail)
+        return JSONResponse(
+            status_code=201,
+            content=SubjectAuthStart(
+                authentication_id=row.id, authorization_url=url,
+                provider_name=_config.subject_auth_provider_name, expires_at=row.expires_at,
+            ).model_dump(mode="json"),
+        )
+
+    async def subject_auth_status(
+        self, request_id: str, user: PartnerUser = Depends(current_partner_user)
+    ):
+        if await self.assisted.get_request(request_id, user.partner_id) is None:
+            return not_found()
+        summary = (await self.subject_auth.summaries([request_id])).get(request_id)
+        if summary is None:
+            return not_found()
+        return SubjectAuthSummary(**summary)
+
+    async def subject_auth_callback(
+        self,
+        state: Optional[str] = Query(None),
+        code: Optional[str] = Query(None),
+        error_code: Optional[str] = Query(None, alias="error"),
+        error_description: Optional[str] = Query(None),
+    ):
+        if not self.subject_auth.enabled:
+            return not_found()
+        try:
+            row = await self.subject_auth.complete(state, code, error_code, error_description)
+        except LifecycleError as exc:
+            return _callback_page(False, exc.detail, exc.status_code)
+        if row.status == "success":
+            return _callback_page(True, "The person is authenticated. You can close this window.")
+        return _callback_page(False, row.error or "Authentication failed.")
+
     async def list_consents(
         self,
         user: PartnerUser = Depends(current_partner_user),
@@ -226,3 +306,24 @@ class PartnerPortalController(BaseController):
         if receipt is None:
             return not_found()
         return JSONResponse(content=receipt.document)
+
+
+def _callback_page(ok: bool, message: str, status_code: int = 200) -> HTMLResponse:
+    """The page the provider's redirect lands on, in the portal's popup. The
+    portal follows the result through the status API; this page only tells the
+    person what happened (and closes itself on success)."""
+    title = "Authenticated" if ok else "Authentication failed"
+    color = "#1b7f3b" if ok else "#b42318"
+    close = "<script>setTimeout(function(){window.close()},3000)</script>" if ok else ""
+    body = (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>{title}</title></head>"
+        "<body style='font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem'>"
+        f"<h1 style='color:{color};font-size:1.4rem'>{title}</h1>"
+        f"<p>{html.escape(message)}</p>"
+        "<p style='color:#666'>Return to the partner portal.</p>"
+        f"{close}</body></html>"
+    )
+    return HTMLResponse(content=body, status_code=status_code)
+

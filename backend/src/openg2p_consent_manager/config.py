@@ -239,3 +239,51 @@ class Settings(BaseSettings):
     evidence_max_bytes: int = 10 * 1024 * 1024
     evidence_allowed_types: list[str] = ["application/pdf", "image/jpeg", "image/png"]
     evidence_max_files_per_request: int = 20
+
+    # ── Subject authentication with national ID (consent scenario 1, phase 2) ──
+    # The subject (e.g. a farmer at the bank) proves who they are through an
+    # OIDC provider such as eSignet (OTP, biometrics) during an assisted request:
+    # the partner portal opens the provider's login, the provider redirects to
+    # the callback below, and the CM checks the result. When enabled it is
+    # MANDATORY: an assisted request cannot be submitted until its subject has
+    # authenticated (and the signed form is still required).
+    subject_auth_enabled: bool = False
+    subject_auth_provider_name: str = "National ID (eSignet)"
+    # Discovery document (issuer, endpoints, JWKS). Each value can be overridden
+    # below; an override wins.
+    subject_auth_discovery_url: str = ""  # e.g. https://esignet.<domain>/.well-known/openid-configuration
+    subject_auth_issuer: str = ""
+    subject_auth_authorize_url: str = ""
+    subject_auth_token_url: str = ""
+    subject_auth_userinfo_url: str = ""
+    subject_auth_jwks_url: str = ""
+    # The CM's OIDC client at the provider; it authenticates with private_key_jwt.
+    subject_auth_client_id: str = ""
+    # Client private key (RSA PEM): a file (a mounted Secret, read when first
+    # needed, so a Secret created after the pod started is picked up) or inline.
+    subject_auth_private_key_path: str = ""
+    subject_auth_private_key_pem: str = ""
+    subject_auth_key_kid: str = ""  # empty → the client ID (as registered)
+    # Where the provider sends the browser back: the partner portal's host routes
+    # /consent/v1/partner-portal/ to this API, e.g.
+    # https://consent-partner-portal.<domain>/consent/v1/partner-portal/subject-auth/callback
+    subject_auth_redirect_uri: str = ""
+    subject_auth_scope: str = "openid profile"
+    subject_auth_acr_values: str = "mosip:idp:acr:generated-code"
+    # Claims asked for; individual_id (the national ID) is what the subject is
+    # matched on — eSignet's `sub` is pairwise, so it can never equal the ID.
+    subject_auth_claims: dict = {
+        "userinfo": {"individual_id": {"essential": True}, "name": {"essential": True}},
+        "id_token": {},
+    }
+    subject_auth_subject_claim: str = "individual_id"
+    subject_auth_ui_locales: str = ""
+    # Subject ID types the provider authenticates (the national ID); a request
+    # for another type cannot be authenticated, so it cannot be submitted.
+    subject_auth_id_types: list[str] = ["FAYDA_FAN", "NATIONAL_ID", "national_id"]
+    # Claims kept with the authentication record (besides acr/amr/auth_time);
+    # the rest of the provider's answer is not stored.
+    subject_auth_stored_claims: list[str] = ["name"]
+    # How long a started login may take (the state's lifetime).
+    subject_auth_session_ttl_seconds: int = 300
+    subject_auth_http_timeout_seconds: float = 10.0

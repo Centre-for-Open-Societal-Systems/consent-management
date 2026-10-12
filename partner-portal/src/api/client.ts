@@ -11,6 +11,9 @@ import type {
   Evidence,
   Me,
   Page,
+  SubjectAuth,
+  SubjectAuthConfig,
+  SubjectAuthStart,
   UseCase,
 } from "./types";
 
@@ -134,6 +137,15 @@ export const api = {
     request<ConsentRequest>(`${P}/consent-requests/${encodeURIComponent(id)}/submit`, { method: "POST" }),
   cancelRequest: (id: string) =>
     request<ConsentRequest>(`${P}/consent-requests/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
+
+  // ── The subject's national-ID login (eSignet) ─────────────────────
+  subjectAuthConfig: () => request<SubjectAuthConfig>(`${P}/subject-auth`),
+  startSubjectAuth: (id: string) =>
+    request<SubjectAuthStart>(`${P}/consent-requests/${encodeURIComponent(id)}/subject-auth`, {
+      method: "POST",
+    }),
+  subjectAuthStatus: (id: string) =>
+    request<SubjectAuth>(`${P}/consent-requests/${encodeURIComponent(id)}/subject-auth`),
 
   // ── Consents ───────────────────────────────────────────────────────
   listConsents: (p: ListParams = {}) => request<Page<Consent>>(`${P}/consents${qs({ ...p })}`),

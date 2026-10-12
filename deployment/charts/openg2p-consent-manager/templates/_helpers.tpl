@@ -55,6 +55,25 @@ install's manifests are unchanged. Call with the root context.
   value: {{ tpl $p.keycloak.issuerUrl . | quote }}
 - name: CONSENT_MANAGER_PARTNER_AUTH_JWKS_URL
   value: {{ tpl $p.keycloak.jwksUrl . | quote }}
+{{- $sa := $p.subjectAuth | default dict }}
+{{- if $sa.enabled }}
+- name: CONSENT_MANAGER_SUBJECT_AUTH_ENABLED
+  value: "true"
+- name: CONSENT_MANAGER_SUBJECT_AUTH_PROVIDER_NAME
+  value: {{ $sa.providerName | quote }}
+- name: CONSENT_MANAGER_SUBJECT_AUTH_DISCOVERY_URL
+  value: {{ tpl $sa.discoveryUrl . | quote }}
+- name: CONSENT_MANAGER_SUBJECT_AUTH_CLIENT_ID
+  value: {{ tpl $sa.clientId . | quote }}
+- name: CONSENT_MANAGER_SUBJECT_AUTH_REDIRECT_URI
+  value: {{ tpl $sa.redirectUri . | quote }}
+- name: CONSENT_MANAGER_SUBJECT_AUTH_ACR_VALUES
+  value: {{ $sa.acrValues | quote }}
+- name: CONSENT_MANAGER_SUBJECT_AUTH_ID_TYPES
+  value: {{ $sa.idTypes | toJson | quote }}
+- name: CONSENT_MANAGER_SUBJECT_AUTH_PRIVATE_KEY_PATH
+  value: {{ printf "%s/client.pem" $sa.keyMountPath | quote }}
+{{- end }}
 {{- end }}
 {{- if or $e.enabled $p.enabled }}
 - name: CONSENT_MANAGER_EVIDENCE_S3_ENDPOINT
@@ -76,6 +95,15 @@ install's manifests are unchanged. Call with the root context.
       name: {{ tpl $e.s3.existingSecret . | quote }}
       key: {{ $e.s3.secretKeyKey | quote }}
 {{- end }}
+{{- end -}}
+
+{{/*
+true when the staff api mounts the subject-auth client key (partner portal +
+national-ID login on). Root context.
+*/}}
+{{- define "consentManager.subjectAuthOn" -}}
+{{- $p := .Values.partnerPortal | default dict -}}
+{{- if and $p.enabled ($p.subjectAuth | default dict).enabled }}true{{ end -}}
 {{- end -}}
 
 {{- define "consentManagerApi.envVars" -}}

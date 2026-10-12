@@ -22,9 +22,9 @@ _logger = logging.getLogger(_config.logging_default_logger_name)
 _Status = Literal["pending_verification", "approved", "rejected", "cancelled"]
 
 
-def _view(req, consent_id=None) -> VerificationRequestResponse:
+def _view(req, consent_id=None, subject_auth=None) -> VerificationRequestResponse:
     return VerificationRequestResponse(
-        **request_fields(req, consent_id), partner_audience=req.partner_audience
+        **request_fields(req, consent_id, subject_auth), partner_audience=req.partner_audience
     )
 
 
@@ -72,15 +72,19 @@ class ConsentVerificationController(BaseController):
             status=status, limit=limit, offset=offset, submitted_only=True
         )
         ids = await self.assisted.consent_ids([r.id for r in rows])
-        return VerificationRequestList(total=total, items=[_view(r, ids.get(r.id)) for r in rows])
+        auth = await self.assisted.subject_auth.summaries([r.id for r in rows])
+        return VerificationRequestList(
+            total=total, items=[_view(r, ids.get(r.id), auth.get(r.id)) for r in rows]
+        )
 
     async def get_request(self, request_id: str):
         req = await self.assisted.get_request(request_id)
         if req is None:
             return not_found()
         ids = await self.assisted.consent_ids([req.id])
+        auth = await self.assisted.subject_auth.summaries([req.id])
         return VerificationRequestDetail(
-            **_view(req, ids.get(req.id)).model_dump(),
+            **_view(req, ids.get(req.id), auth.get(req.id)).model_dump(),
             evidence=evidence_list(await self.assisted.list_evidence(req.id)),
         )
 
@@ -104,7 +108,8 @@ class ConsentVerificationController(BaseController):
             )
         except LifecycleError as exc:
             return error(exc.status_code, exc.detail)
-        return _view(req, artefact.id)
+        auth = await self.assisted.subject_auth.summaries([req.id])
+        return _view(req, artefact.id, auth.get(req.id))
 
     async def reject(
         self, request_id: str, data: RejectVerification,

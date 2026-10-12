@@ -1,8 +1,9 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../api/client";
-import type { ConsentRequest, Evidence } from "../api/types";
+import { useSubjectAuthConfig } from "../api/hooks";
+import type { ConsentRequest, Evidence, SubjectAuth } from "../api/types";
 import { ErrorNotice, StatusBadge } from "../components/Status";
 import {
   formatBytes,
@@ -34,6 +35,8 @@ export default function RequestDetailPage() {
     queryKey: ["request", id],
     queryFn: () => api.getRequest(id),
   });
+  const { data: authConfig } = useSubjectAuthConfig();
+  const authRequired = !!authConfig?.enabled;
 
   const refresh = (next?: ConsentRequest) => {
     if (next) qc.setQueryData(["request", id], (old: ConsentRequest | undefined) => ({ ...old, ...next }));
@@ -62,6 +65,9 @@ export default function RequestDetailPage() {
 
   const evidence = r.evidence ?? [];
   const hasSignedForm = evidence.some((e) => e.kind === "signed_form");
+  const sa = r.subject_authentication;
+  const authenticated = sa?.status === "success" || !!sa?.previous_success;
+  const authOk = !authRequired || authenticated;
   const pending = r.status === "pending";
   const cancellable = r.status === "pending" || r.status === "pending_verification";
 
@@ -126,7 +132,7 @@ export default function RequestDetailPage() {
         </div>
         <div className="card">
           <h3 className="card-title">Progress</h3>
-          <Timeline r={r} hasSignedForm={hasSignedForm} />
+          <Timeline r={r} hasSignedForm={hasSignedForm} authRequired={authRequired} authenticated={authenticated} />
         </div>
       </div>
 
@@ -148,15 +154,27 @@ export default function RequestDetailPage() {
         ))}
       </div>
 
+      {authRequired && (
+        <SubjectAuthCard
+          r={r}
+          providerName={authConfig?.provider_name ?? "National ID"}
+          idTypes={authConfig?.id_types ?? []}
+          editable={pending}
+          onChange={refresh}
+        />
+      )}
+
       <EvidenceCard requestId={r.id} evidence={evidence} editable={pending} onChange={refresh} />
 
       {(pending || cancellable) && (
         <div className="card">
           {pending && (
             <p style={{ marginTop: 0 }}>
-              {hasSignedForm
-                ? "When all documents are uploaded, submit the request. Consent Manager staff check the signed form against the subject and the request; the consent is active once they verify it."
-                : "Upload the consent form the subject signed before you submit the request for verification."}
+              {!authOk
+                ? "Authenticate the person with their national ID, and upload the consent form they signed, before you submit the request for verification."
+                : hasSignedForm
+                  ? "When all documents are uploaded, submit the request. Consent Manager staff check the signed form against the subject and the request; the consent is active once they verify it."
+                  : "Upload the consent form the subject signed before you submit the request for verification."}
             </p>
           )}
           {r.status === "pending_verification" && (
@@ -186,8 +204,14 @@ export default function RequestDetailPage() {
               {pending && (
                 <button
                   className="btn-primary"
-                  disabled={!hasSignedForm || submit.isPending}
-                  title={hasSignedForm ? undefined : "Upload the signed consent form first"}
+                  disabled={!hasSignedForm || !authOk || submit.isPending}
+                  title={
+                    !authOk
+                      ? "Authenticate the person with national ID first"
+                      : hasSignedForm
+                        ? undefined
+                        : "Upload the signed consent form first"
+                  }
                   onClick={() => submit.mutate()}
                 >
                   {submit.isPending ? "Submitting…" : "Submit for verification"}
@@ -203,7 +227,17 @@ export default function RequestDetailPage() {
 
 type Step = { label: string; when?: string | null; detail?: string; state: "done" | "current" | "bad" | "todo" };
 
-function Timeline({ r, hasSignedForm }: { r: ConsentRequest; hasSignedForm: boolean }) {
+function Timeline({
+  r,
+  hasSignedForm,
+  authRequired,
+  authenticated,
+}: {
+  r: ConsentRequest;
+  hasSignedForm: boolean;
+  authRequired: boolean;
+  authenticated: boolean;
+}) {
   const steps: Step[] = [
     {
       label: "Request created",
@@ -214,13 +248,27 @@ function Timeline({ r, hasSignedForm }: { r: ConsentRequest; hasSignedForm: bool
   ];
   const s = r.status;
   if (s === "pending") {
+    if (authRequired) {
+      steps.push({
+        label: authenticated ? "Person authenticated (national ID)" : "Authenticate the person (national ID)",
+        when: authenticated ? r.subject_authentication?.authenticated_at : undefined,
+        state: authenticated ? "done" : "current",
+      });
+    }
     steps.push({
       label: hasSignedForm ? "Signed form uploaded" : "Upload the signed form",
       state: hasSignedForm ? "done" : "current",
     });
-    steps.push({ label: "Submit for verification", state: hasSignedForm ? "current" : "todo" });
+    const ready = hasSignedForm && (!authRequired || authenticated);
+    steps.push({ label: "Submit for verification", state: ready ? "current" : "todo" });
     steps.push({ label: "Verification by Consent Manager staff", state: "todo" });
   } else {
+    if (r.subject_authentication?.status === "success")
+      steps.push({
+        label: "Person authenticated (national ID)",
+        when: r.subject_authentication.authenticated_at,
+        state: "done",
+      });
     if (r.submitted_at) steps.push({ label: "Submitted for verification", when: r.submitted_at, state: "done" });
     if (s === "pending_verification") {
       steps.push({ label: "Verification by Consent Manager staff", state: "current" });
@@ -426,3 +474,154 @@ function EvidenceCard({
     </div>
   );
 }
+
+// How long the portal follows a login: eSignet's own session lasts about as long.
+const AUTH_POLL_MS = 2000;
+const AUTH_TIMEOUT_MS = 5 * 60_000;
+
+const AUTH_LABEL: Record<string, string> = {
+  pending: "Waiting for the person to log in",
+  processing: "Checking the result",
+  success: "Authenticated",
+  failed: "Failed",
+  expired: "Expired (not completed in time)",
+};
+
+function SubjectAuthCard({
+  r,
+  providerName,
+  idTypes,
+  editable,
+  onChange,
+}: {
+  r: ConsentRequest;
+  providerName: string;
+  idTypes: string[];
+  editable: boolean;
+  onChange: () => void;
+}) {
+  const [following, setFollowing] = useState(false);
+  const [status, setStatus] = useState<SubjectAuth | null>(r.subject_authentication ?? null);
+  const [err, setErr] = useState<string | null>(null);
+  const popup = useRef<Window | null>(null);
+
+  useEffect(() => setStatus(r.subject_authentication ?? null), [r.subject_authentication]);
+
+  // Follow the login: poll until it ends, the popup is closed, or time runs out.
+  useEffect(() => {
+    if (!following) return;
+    const started = Date.now();
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        const s = await api.subjectAuthStatus(r.id);
+        setStatus(s);
+        const open = popup.current && !popup.current.closed;
+        if (!["pending", "processing"].includes(s.status) || !open || Date.now() - started > AUTH_TIMEOUT_MS) {
+          stopped = true;
+          setFollowing(false);
+          if (s.status === "success" && open) popup.current?.close();
+          onChange();
+          return;
+        }
+      } catch (e) {
+        setErr(errText(e, "Could not check the login."));
+      }
+      if (!stopped) timer = window.setTimeout(tick, AUTH_POLL_MS);
+    };
+    let timer = window.setTimeout(tick, AUTH_POLL_MS);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [following, r.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const start = async () => {
+    setErr(null);
+    // Open the window in the click (popup blockers), then point it at the provider.
+    const w = window.open("", "national-id-login", "width=1024,height=800,left=100,top=60");
+    try {
+      const s = await api.startSubjectAuth(r.id);
+      if (!w) {
+        setErr("The browser blocked the login window. Allow pop-ups for this site and try again.");
+        return;
+      }
+      w.location.href = s.authorization_url;
+      popup.current = w;
+      setStatus({ authentication_id: s.authentication_id, status: "pending" });
+      setFollowing(true);
+    } catch (e) {
+      w?.close();
+      setErr(errText(e, "Could not start the login."));
+    }
+  };
+
+  const s = status;
+  const ok = s?.status === "success";
+  const typeOk = idTypes.length === 0 || idTypes.includes(r.subject_id?.type);
+  return (
+    <div className="card">
+      <h3 className="card-title">Authentication of the person</h3>
+      <p className="muted" style={{ marginTop: 0 }}>
+        The person proves who they are with their national ID through {providerName} (a one-time code to the phone
+        registered with their ID, or biometrics). The authenticated ID must be the request&apos;s subject,{" "}
+        <code className="mono">{r.subject_id?.value}</code>.
+      </p>
+      {s ? (
+        <dl className="facts">
+          <dt>Status</dt>
+          <dd>
+            <span className={`badge badge-${ok ? "approved" : s.status === "failed" || s.status === "expired" ? "rejected" : "pending"}`}>
+              {AUTH_LABEL[s.status] ?? s.status}
+            </span>
+          </dd>
+          {ok && (
+            <>
+              <dt>Authenticated</dt>
+              <dd>
+                {formatDateTime(s.authenticated_at)}
+                {s.method ? ` · ${s.method}` : ""}
+              </dd>
+            </>
+          )}
+          {s.error && (
+            <>
+              <dt>Reason</dt>
+              <dd>{s.error}</dd>
+            </>
+          )}
+          {!ok && s.previous_success && (
+            <>
+              <dt>Earlier</dt>
+              <dd>Authenticated {formatDateTime(s.previous_success.authenticated_at)}</dd>
+            </>
+          )}
+        </dl>
+      ) : (
+        <p style={{ marginTop: 0 }}>Not authenticated yet.</p>
+      )}
+      {!typeOk && editable && (
+        <div className="notice notice-error">
+          A subject with ID type <code className="mono">{r.subject_id?.type}</code> cannot log in with national ID.
+          Create the request with the person&apos;s national ID ({idTypes.join(", ")}).
+        </div>
+      )}
+      {err && <div className="notice notice-error">{err}</div>}
+      {following && (
+        <div className="notice notice-info">
+          The login window is open. Hand the device to the person, or let them use their phone; this page updates when
+          they finish.
+        </div>
+      )}
+      {editable && typeOk && !ok && (
+        <div className="actions">
+          <button className="btn-primary" onClick={start} disabled={following}>
+            {following ? "Waiting for the login…" : s ? "Authenticate again" : "Authenticate with national ID"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+

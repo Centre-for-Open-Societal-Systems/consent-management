@@ -168,6 +168,31 @@ export default function VerificationDetailPage() {
               </td>
             </tr>
             <tr>
+              <th>Person authenticated</th>
+              <td>
+                {r.subject_authentication?.status === "success" ? (
+                  <>
+                    <span className="badge badge-approved">yes</span>{" "}
+                    {r.subject_authentication.provider ?? "national ID"}
+                    {r.subject_authentication.method ? ` · ${r.subject_authentication.method}` : ""} ·{" "}
+                    {dateTime(r.subject_authentication.authenticated_at)}
+                    <div className="muted" style={{ fontSize: 12 }}>
+                      The authenticated national ID matched the subject above.
+                    </div>
+                  </>
+                ) : r.subject_authentication?.previous_success ? (
+                  <>
+                    <span className="badge badge-approved">yes</span>{" "}
+                    {dateTime(r.subject_authentication.previous_success.authenticated_at)}
+                  </>
+                ) : r.subject_authentication ? (
+                  <span className="badge badge-rejected">{r.subject_authentication.status}</span>
+                ) : (
+                  <span className="muted">No (signed form only)</span>
+                )}
+              </td>
+            </tr>
+            <tr>
               <th>Created / submitted</th>
               <td>
                 {dateTime(r.created_at)} / {dateTime(r.submitted_at)}

@@ -60,6 +60,9 @@ class FakeEsignet:
         self.id_overrides = {}
         self.userinfo_overrides = {}
         self.signing_key = keys.provider
+        # eSignet signs userinfo with the identity system's key, which its JWKS
+        # does not publish; None = the same key as the ID token.
+        self.userinfo_key = None
 
     def authorize(self, url):
         """What the subject's browser does at eSignet: returns the callback query."""
@@ -68,8 +71,8 @@ class FakeEsignet:
         self.logins[code] = q
         return {"state": q["state"], "code": code}, q
 
-    def _sign(self, claims):
-        return jwt.encode(claims, self.signing_key, algorithm="RS256", headers={"kid": "esignet-1"})
+    def _sign(self, claims, key=None, kid="esignet-1"):
+        return jwt.encode(claims, key or self.signing_key, algorithm="RS256", headers={"kid": kid})
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
@@ -113,7 +116,9 @@ class FakeEsignet:
                     "individual_id": self.individual_id, "name": "Abebe Kebede", "exp": int(time.time()) + 300,
                     "phone_number": "+251900000000"}
             info.update(self.userinfo_overrides)
-            return httpx.Response(200, content=self._sign(info), headers={"content-type": "application/jwt"})
+            body = (self._sign(info, self.userinfo_key, kid="identity-system-key") if self.userinfo_key
+                    else self._sign(info))
+            return httpx.Response(200, content=body, headers={"content-type": "application/jwt"})
         return httpx.Response(404)
 
 
@@ -336,3 +341,27 @@ def test_client_key_missing_is_503(portal, esignet, as_partner, bank, monkeypatc
     rid = create(pc)["id"]
     status, body = pc("POST", f"/consent-requests/{rid}/subject-auth")
     assert status == 503 and "client key" in body["error"]
+
+
+def test_userinfo_signed_by_an_unpublished_key(portal, esignet, keys, as_partner, bank, callback):
+    """As eSignet: the userinfo JWT is signed by the identity system's key, which
+    is not in eSignet's JWKS. The HTTPS answer vouches for it; its claims are
+    still checked."""
+    pc = as_partner(bank.audience)
+    esignet.userinfo_key = keys.other
+    rid = create(pc)["id"]
+    _, status, page = login(pc, rid, esignet, callback)
+    assert "Authenticated" in page
+    assert pc("GET", f"/consent-requests/{rid}/subject-auth")[1]["status"] == "success"
+
+    for change, fragment in (({"aud": "someone-else"}, "not for this client"),
+                             ({"iss": "https://evil.test"}, "unexpected issuer"),
+                             ({"exp": 1}, "expired"),
+                             ({"sub": "another-pairwise"}, "another person"),
+                             ({"individual_id": "999999999999"}, "not the request")):
+        esignet.userinfo_overrides = change
+        rid = create(pc)["id"]
+        login(pc, rid, esignet, callback)
+        s = pc("GET", f"/consent-requests/{rid}/subject-auth")[1]
+        assert s["status"] == "failed" and fragment in s["error"], (change, s)
+

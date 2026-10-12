@@ -11,8 +11,12 @@ the subject matched on ``individual_id``), with these checks on every login:
   concurrent callback finds nothing to claim;
 * the ID token's signature (provider JWKS), ``iss``, ``aud`` (the client ID),
   ``exp`` and ``nonce``;
-* a signed userinfo answer is verified the same way, and its ``sub`` must equal
-  the ID token's;
+* the userinfo answer comes straight from the provider over HTTPS with the
+  access token, which is what makes it authentic (OIDC Core 5.3.2). When it is a
+  JWT signed with a key the provider publishes, its signature is checked too;
+  eSignet signs it with the identity system's key, which it does not publish,
+  so then only its claims are checked. Either way its ``iss`` / ``aud`` (when
+  present) must be the provider and this client, and its ``sub`` the ID token's;
 * the subject claim (the national ID) must equal the request's subject ID.
 
 Only acr / amr / auth_time and the configured claims are kept; the tokens are
@@ -165,6 +169,29 @@ class SubjectAuthService(BaseService):
             audience=audience, options={"verify_aud": audience is not None, "require": ["exp", "iss"]},
             leeway=30,
         )
+
+    async def _userinfo_claims(self, token: str, meta: dict, client_id: str) -> dict:
+        """Claims of a JWT userinfo answer (fetched from the provider over HTTPS).
+
+        Signature checked when the key is one the provider publishes; otherwise
+        (eSignet: the identity system's key) the HTTPS answer is what vouches for
+        it. iss / aud / exp are checked whenever present."""
+        try:
+            kid = jwt.get_unverified_header(token).get("kid")
+            keys = await self._jwk_set(meta["jwks_uri"])
+            if kid is None or any(k.key_id == kid for k in keys.keys):
+                return await self._verify(token, meta, client_id if _aud_present(token) else None)
+            info = jwt.decode(token, options={"verify_signature": False})
+        except Exception as exc:
+            raise LifecycleError(401, f"the userinfo answer is not valid: {exc}") from exc
+        if info.get("iss") and info["iss"] != meta["issuer"]:
+            raise LifecycleError(401, "the userinfo answer is not valid: unexpected issuer")
+        aud = info.get("aud")
+        if aud and client_id not in (aud if isinstance(aud, list) else [aud]):
+            raise LifecycleError(401, "the userinfo answer is not valid: not for this client")
+        if isinstance(info.get("exp"), (int, float)) and info["exp"] < time.time() - 30:
+            raise LifecycleError(401, "the userinfo answer is not valid: expired")
+        return info
 
     # ── start ────────────────────────────────────────────────────────────────
 
@@ -390,10 +417,7 @@ class SubjectAuthService(BaseService):
                 if u.status_code != 200:
                     raise LifecycleError(502, f"the provider's userinfo failed: HTTP {u.status_code}")
                 if "jwt" in u.headers.get("content-type", ""):
-                    try:
-                        info = await self._verify(u.text.strip(), meta, None)
-                    except Exception as exc:
-                        raise LifecycleError(401, f"the userinfo answer is not valid: {exc}") from exc
+                    info = await self._userinfo_claims(u.text.strip(), meta, client_id)
                 else:
                     info = u.json()
                 if info.get("sub") and info["sub"] != claims.get("sub"):
@@ -424,3 +448,8 @@ class SubjectAuthService(BaseService):
             token_validated=True,
             verified_claims=kept,
         )
+
+
+def _aud_present(token: str) -> bool:
+    return "aud" in jwt.decode(token, options={"verify_signature": False})
+

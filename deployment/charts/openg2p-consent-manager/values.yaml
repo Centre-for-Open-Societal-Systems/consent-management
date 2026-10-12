@@ -296,6 +296,12 @@ partner-keycloak-init:
   realms:
     # Must equal global.consentPartnerRealm.
     partner:
+      # The OpenG2P login page labelled "Partner Portal" (theme in the
+      # keycloak-themes image, as staff-portal / agent-portal for the staff and
+      # agent realms). An image without it falls back to Keycloak's own page.
+      themes:
+        loginTheme: partner-portal
+        adminTheme: partner-portal
       clients:
         # PUBLIC browser client for the partner portal SPA (standard flow; the
         # SPA uses PKCE). Redirects back to the portal host only.

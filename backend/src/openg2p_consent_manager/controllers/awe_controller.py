@@ -117,6 +117,11 @@ class AweController(BaseController):
         page_size: int = Query(25, ge=1, le=100),
         authorization: Optional[str] = Header(default=None, alias="Authorization"),
     ):
+        if not _config.awe_enabled:
+            # Approvals are off (policies take effect at once) and AWE may not even be
+            # installed: an empty inbox that says so, not AWE's 404.
+            return {"items": [], "total": 0, "page": page, "page_size": page_size, "pages": 1,
+                    "awe_enabled": False}
         return await self._forward(
             self.awe.list_my_tasks(
                 _bearer(authorization), status=status,

@@ -30,7 +30,12 @@ export default function ApprovalsPage() {
           Could not load approval tasks. {error instanceof ApiError ? error.message : ""}
         </div>
       )}
-      {data && tasks.length === 0 && (
+      {data?.awe_enabled === false && (
+        <div className="card">
+          Approvals are turned off in this Consent Manager: policy changes take effect at once.
+        </div>
+      )}
+      {data && data.awe_enabled !== false && tasks.length === 0 && (
         <div className="card">You have no pending approvals. 🎉</div>
       )}
 

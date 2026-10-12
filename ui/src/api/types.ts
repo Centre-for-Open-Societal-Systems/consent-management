@@ -104,6 +104,8 @@ export interface PagedTasks {
   page: number;
   page_size: number;
   pages: number;
+  // false when the CM's AWE approvals are off (no inbox; policies take effect at once).
+  awe_enabled?: boolean;
 }
 
 // ── Decision log (admin status/audit view) ───────────────────────────────

@@ -354,3 +354,12 @@ def test_concurrent_widenings_leave_one_pending(call, run, awe_on, binding):
     assert sum(isinstance(r, PolicyPending) for r in results) == 1, results
     pending = [p for p in versions(call, binding).values() if p["status"] == "pending"]
     assert len(pending) == 1
+
+
+def test_inbox_when_approvals_are_off_is_empty_and_says_so(call, env, monkeypatch, mock_awe):
+    seen, _state = mock_awe
+    monkeypatch.setattr(_config, "awe_enabled", False)
+    status, body = call("GET", "/consent/v1/awe/tasks")
+    assert status == 200, body
+    assert body["items"] == [] and body["total"] == 0 and body["awe_enabled"] is False
+    assert seen == []  # AWE is not called

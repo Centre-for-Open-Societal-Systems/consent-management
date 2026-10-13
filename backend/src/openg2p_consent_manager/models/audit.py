@@ -30,7 +30,7 @@ class DecisionLog(BaseORMModelWithId):
     policy_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # Hash of the request context — proves what was evaluated without storing PII.
     request_ctx_hash: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-    # Department role: the exchange consent receipt this decision was made on.
+    # Department role: the exchange consent token this decision was made on.
     receipt_jti: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     receipt_issuer: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 

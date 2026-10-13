@@ -57,12 +57,13 @@ permit `consent_id`, `receipt_id`, `subject_id` (the consent's subject),
   `partner_id` is in the CM's `receipt_presenters` (else deny
   `receipt_presenter_not_allowed`). Every granted controller (or just
   `data_controller`) is validated as above; if all permit, the response adds
-  `receipts: {data_controller: "<receipt JWS>"}` — one signed consent receipt
-  (`typ: consent-receipt+jwt`) per controller, verifiable with this CM's JWKS.
-- A consent receipt as `consent_jws` (department role) — accepted only from a
+  `receipts: {data_controller: "<token JWS>"}` — one signed, short-lived
+  consent token (`typ: consent-receipt+jwt`) per controller, verifiable with
+  this CM's JWKS.
+- A consent token as `consent_jws` (department role) — accepted only from a
   configured trusted issuer (else deny `receipt_issuer_not_trusted`); its
   `aud` must be `data_controller` and its `presenter` the caller's
-  `partner_id`. Effective scopes = receipt scopes ∩ this CM's policy for the
+  `partner_id`. Effective scopes = token scopes ∩ this CM's policy for the
   presenter at that controller.
 
 **A stored consent by its ID** (instead of `consent_jws`; exactly one of the
@@ -105,13 +106,13 @@ class VerificationController(BaseController):
             "/consents/{consent_id}/status", self.get_status,
             responses={200: {"model": StatusResponse}}, methods=["GET"],
         )
-        # Agri Stack exchange: status of a consent receipt this CM issued.
+        # Agri Stack exchange: status of a consent token this CM issued.
         # Partner-api convention (like consent status): no Keycloak; the jti is
         # an unguessable UUID and the answer is only active/revoked/expired.
         self.router.add_api_route(
             "/receipts/{jti}/status", self.get_receipt_status,
             responses={200: {"model": ReceiptStatusResponse}}, methods=["GET"],
-            summary="Status of an issued consent receipt (exchange role)",
+            summary="Status of an issued consent token (exchange role)",
         )
         # Receipt fetch is public — the signature makes it self-verifying.
         self.router.add_api_route(

@@ -138,20 +138,21 @@ global:
   consentSigningKid: cm-2025-01
 
   # ── Agri Stack exchange (OFF by default) ────────────────────────────────
-  # Consent receipts between Consent Managers. Leave everything empty for a
+  # Consent tokens (short-lived, one per registry and query; called receipts
+  # in the settings and API) between Consent Managers. Leave everything empty for a
   # standalone install: nothing is rendered and CM behaves exactly as before.
   # `enabled` only shows these settings in Rancher; the values drive behaviour.
   agriStackExchange:
     enabled: false
     # Exchange role (the `agrix` install): issuer ID stamped as `iss` on the
-    # receipts, and the callers (their partner_id / DCI sender_id, e.g.
+    # consent tokens, and the callers (their partner_id / DCI sender_id, e.g.
     # agri-composite) allowed to request them with issue_receipts=true. A list
-    # or a comma-separated string. Receipts are signed with the signing key
+    # or a comma-separated string. Tokens are signed with the signing key
     # above and verifiable at the partner api's /.well-known/jwks.json.
     issuer: ''
     receiptPresenters: []
     receiptTtlSeconds: 900
-    # Department role (`trial`, `csr`): exchange CMs whose receipts /validate
+    # Department role (`trial`, `csr`): exchange CMs whose consent tokens /validate
     # accepts — list of {issuer, jwks_url, presenter, status_url?}; jwks_url is
     # the exchange CM partner api's /.well-known/jwks.json. The presenter needs
     # a binding + policy at this CM (audience = presenter) per controller.
@@ -162,7 +163,7 @@ global:
       issuer: ''
       jwksUrl: ''
       presenter: ''
-    # Check each receipt's status at its issuer: always | never.
+    # Check each consent token's status at its issuer: always | never.
     receiptStatusCheck: always
 
 # ── AWE seed Job + callback HMAC Secret (rendered only when global.aweEnabled) ──

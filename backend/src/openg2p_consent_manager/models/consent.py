@@ -18,7 +18,7 @@ class ArtefactStatus(str, Enum):
 class ArtefactSource(str, Enum):
     embedded = "embedded"  # partner-signed object, verified on the hot path
     originated = "originated"  # collected by the CM via the lifecycle flow
-    receipt = "receipt"  # an exchange CM's consent receipt (department role)
+    receipt = "receipt"  # an exchange CM's consent token (department role)
 
 
 class RequestStatus(str, Enum):

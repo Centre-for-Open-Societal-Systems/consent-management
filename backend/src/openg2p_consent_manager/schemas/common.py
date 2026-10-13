@@ -25,15 +25,15 @@ class ReasonCode(str, Enum):
     subject_mismatch = "subject_mismatch"
     # ── Agri Stack exchange (only when its settings are configured) ──
     # issue_receipts requested by a caller that is not a configured presenter
-    # (or receipt issuing is not configured on this CM).
+    # (or consent-token issuing is not configured on this CM).
     receipt_presenter_not_allowed = "receipt_presenter_not_allowed"
-    # A consent receipt from an issuer this CM does not trust (or none trusted).
+    # A consent token from an issuer this CM does not trust (or none trusted).
     receipt_issuer_not_trusted = "receipt_issuer_not_trusted"
-    # A trusted issuer's receipt that failed verification (signature, typ, claims).
+    # A trusted issuer's consent token that failed verification (signature, typ, claims).
     receipt_invalid = "receipt_invalid"
-    # The receipt names another presenter than the caller.
+    # The consent token names another presenter than the caller.
     presenter_mismatch = "presenter_mismatch"
-    # The receipt's status could not be checked at its issuer (fail closed).
+    # The consent token's status could not be checked at its issuer (fail closed).
     receipt_status_unavailable = "receipt_status_unavailable"
     # ── A stored (originated) consent presented by its ID ──
     # No originated consent with that ID.

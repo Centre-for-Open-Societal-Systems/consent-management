@@ -81,7 +81,7 @@ class VerificationService(BaseService):
                 ReasonCode.malformed_object, "consent JWS could not be decoded",
                 now, ctx_hash,
             )
-        # An exchange CM's consent receipt (department role).
+        # An exchange CM's consent token (department role).
         if isinstance(jws_header, dict) and jws_header.get("typ") == RECEIPT_TYP:
             return await self._validate_receipt(parsed, claims, jws_header, now, ctx_hash)
         try:
@@ -227,13 +227,13 @@ class VerificationService(BaseService):
             obj, grant, partner, result, now, ctx_hash
         )
 
-    # ── Agri Stack exchange: issuing receipts (exchange role) ───────────────
+    # ── Agri Stack exchange: issuing consent tokens (exchange role) ─────────
 
     async def _validate_and_issue(self, parsed: ValidateRequest) -> Decision:
         """``issue_receipts``: validate the partner's consent for each granted
         controller (or just ``data_controller``) exactly as a registry's call
         would — same checks, artefacts and decision log — and, if every one is a
-        permit, sign one receipt per controller for the caller to present."""
+        permit, sign one consent token per controller for the caller to present."""
         now = datetime.now(timezone.utc)
         ctx_hash = sha256_hex(parsed.consent_jws.encode("utf-8"))
         presenter = parsed.partner_id
@@ -294,7 +294,7 @@ class VerificationService(BaseService):
         consent verified by staff). Checks the consent's state, the partner
         that obtained it and the subject; each grant is narrowed to the
         partner's CURRENT policy for its controller (and requested_scopes).
-        With ``issue_receipts``, signs one receipt per granted controller in
+        With ``issue_receipts``, signs one consent token per granted controller in
         exactly the format used for a partner-signed consent."""
         from ..schemas.common import SubjectId
 
@@ -453,15 +453,15 @@ class VerificationService(BaseService):
             )
             return result.scalars().first()
 
-    # ── Agri Stack exchange: accepting receipts (department role) ───────────
+    # ── Agri Stack exchange: accepting consent tokens (department role) ─────
 
     async def _validate_receipt(
         self, parsed: ValidateRequest, claims, header: dict, now, ctx_hash
     ) -> Decision:
-        """A consent receipt from an exchange CM: verify it against a trusted
+        """A consent token from an exchange CM: verify it against a trusted
         issuer's JWKS, check audience/presenter/time (and its status at the
         issuer), then apply THIS CM's standing policy for the presenter at the
-        calling controller. Effective scopes = receipt scopes ∩ policy."""
+        calling controller. Effective scopes = token scopes ∩ policy."""
         claims = claims if isinstance(claims, dict) else {}
         iss = claims.get("iss")
         jti = claims.get("jti") if isinstance(claims.get("jti"), str) else None
@@ -559,7 +559,7 @@ class VerificationService(BaseService):
                 now, ctx_hash, **log,
             )
 
-        # 3. Status at the issuer (revoked consent → revoked receipt).
+        # 3. Status at the issuer (revoked consent → revoked token).
         if (_config.receipt_status_check or "always").lower() != "never":
             status = await self.exchange.remote_status(trusted, jti)
             if status is None:
@@ -585,7 +585,7 @@ class VerificationService(BaseService):
             )
         partner = material["partner"]
 
-        # The same receipt presented again for this controller → stored decision.
+        # The same token presented again for this controller → stored decision.
         existing = await self._existing_artefact(jti, controller)
         if existing is not None:
             if existing.partner_id != partner.id or existing.subject_id_value != sub["value"]:
@@ -617,7 +617,7 @@ class VerificationService(BaseService):
                 result.reason, result.detail, now, ctx_hash, partner_id=partner.id,
                 policy_version=result.policy_version, **log,
             )
-        # 5. The normal decision; the artefact lives no longer than the receipt.
+        # 5. The normal decision; the artefact lives no longer than the token.
         return await self._permit(
             obj, grant, partner, result, now, ctx_hash,
             source=ArtefactSource.receipt.value, valid_until=min(exp, consent_exp),

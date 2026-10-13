@@ -169,59 +169,59 @@ questions:
 # `agrix` install (issuer + presenters); department role on `trial` / `csr`
 # (trusted issuer = the exchange CM).
 - variable: global.agriStackExchange.enabled
-  description: Show the Agri Stack exchange settings (consent receipts between Consent Managers). Leave off for a standalone install.
+  description: Show the Agri Stack exchange settings (short-lived consent tokens between Consent Managers). Leave off for a standalone install.
   type: boolean
   default: false
-  label: Agri Stack Exchange
+  label: Consent Tokens (Exchange)?
   group: Agri Stack exchange
 - variable: global.agriStackExchange.issuer
-  description: "Exchange role: issuer ID stamped on the consent receipts this CM signs (e.g. agri-stack-exchange-cm). Empty = this CM issues no receipts."
+  description: "Exchange role: issuer ID stamped on the consent tokens this CM signs (e.g. agri-stack-exchange-cm). Empty = this CM issues no tokens."
   type: string
   default: ""
-  label: Receipt Issuer ID (exchange)
+  label: Token Issuer ID (exchange)
   group: Agri Stack exchange
   show_if: global.agriStackExchange.enabled=true
 - variable: global.agriStackExchange.receiptPresenters
-  description: "Exchange role: comma-separated callers (partner_id / DCI sender_id) allowed to request receipts, e.g. agri-composite."
+  description: "Exchange role: comma-separated callers (partner_id / DCI sender_id) allowed to request consent tokens, e.g. agri-composite."
   type: string
   default: ""
-  label: Receipt Presenters (exchange)
+  label: Token Presenters (exchange)
   group: Agri Stack exchange
   show_if: global.agriStackExchange.enabled=true
 - variable: global.agriStackExchange.receiptTtlSeconds
-  description: "Exchange role: receipt lifetime in seconds (capped by the consent's expiry)."
+  description: "Exchange role: consent-token lifetime in seconds (capped by the consent's expiry)."
   type: int
   default: 900
-  label: Receipt TTL Seconds (exchange)
+  label: Token TTL Seconds (exchange)
   group: Agri Stack exchange
   show_if: global.agriStackExchange.enabled=true
 - variable: global.agriStackExchange.trustedIssuer.issuer
-  description: "Department role: issuer ID of the exchange CM whose receipts this CM accepts. Empty = receipts are denied."
+  description: "Department role: issuer ID of the exchange CM whose consent tokens this CM accepts. Empty = tokens are denied."
   type: string
   default: ""
-  label: Trusted Receipt Issuer ID (department)
+  label: Trusted Token Issuer ID (department)
   group: Agri Stack exchange
   show_if: global.agriStackExchange.enabled=true
 - variable: global.agriStackExchange.trustedIssuer.jwksUrl
-  description: "Department role: the exchange CM partner api's JWKS URL (…/.well-known/jwks.json). Receipt status is checked under the same base URL."
+  description: "Department role: the exchange CM partner api's JWKS URL (…/.well-known/jwks.json). Token status is checked under the same base URL."
   type: string
   default: ""
   label: Trusted Issuer JWKS URL (department)
   group: Agri Stack exchange
   show_if: global.agriStackExchange.enabled=true
 - variable: global.agriStackExchange.trustedIssuer.presenter
-  description: "Department role: the only presenter accepted on this issuer's receipts (e.g. agri-composite). Bind it at this CM (audience = presenter) with a policy per registry."
+  description: "Department role: the only presenter accepted on this issuer's consent tokens (e.g. agri-composite). Bind it at this CM (audience = presenter) with a policy per registry."
   type: string
   default: ""
   label: Trusted Issuer Presenter (department)
   group: Agri Stack exchange
   show_if: global.agriStackExchange.enabled=true
 - variable: global.agriStackExchange.receiptStatusCheck
-  description: "Department role: check each receipt's status (revoked/expired) at the issuer."
+  description: "Department role: check each consent token's status (revoked/expired) at the issuer."
   type: enum
   options: [always, never]
   default: always
-  label: Receipt Status Check (department)
+  label: Token Status Check (department)
   group: Agri Stack exchange
   show_if: global.agriStackExchange.enabled=true
 

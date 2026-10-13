@@ -106,7 +106,7 @@ class ValidateRequest(BaseModel):
     # consent's data_controller if given.
     data_controller: Optional[str] = None
     request_context: Optional[RequestContext] = None
-    # Exchange role: on permit, also return one signed consent receipt per
+    # Exchange role: on permit, also return one signed consent token per
     # granted controller (or just ``data_controller`` if given). Only for a
     # caller (``partner_id``) listed in the CM's ``receipt_presenters``.
     issue_receipts: bool = False
@@ -149,7 +149,7 @@ class Decision(BaseModel):
     valid_until: Optional[datetime] = None
     policy_version: Optional[int] = None
     evaluated_at: datetime
-    # Exchange role, issue_receipts=true and permit: {data_controller: receipt JWS}.
+    # Exchange role, issue_receipts=true and permit: {data_controller: consent token JWS}.
     receipts: Optional[Dict[str, str]] = None
     # Permit for a stored consent (consent_id) or with issue_receipts:
     # {data_controller: effective scopes}.

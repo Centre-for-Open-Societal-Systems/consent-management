@@ -262,7 +262,7 @@ class Initializer(BaseInitializer):
                         "data_controller VARCHAR(255)"
                     )
                 )
-                # Agri Stack exchange: the consent receipt a decision was made
+                # Agri Stack exchange: the consent token a decision was made
                 # on (department role). NULL for every other decision.
                 for column in ("receipt_jti", "receipt_issuer"):
                     await conn.execute(

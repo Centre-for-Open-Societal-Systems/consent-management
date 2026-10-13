@@ -1,14 +1,18 @@
-"""Agri Stack exchange (G2P-5719): consent receipts between Consent Managers.
+"""Agri Stack exchange (G2P-5719): consent tokens between Consent Managers.
+
+A consent token (called *receipt* in the API, settings and identifiers here)
+is a short-lived JWS for one registry and one query — not the long-lived
+Kantara consent receipt built by ReceiptService.
 
 One codebase, two roles — both off unless configured:
 
 - **Exchange role** (``receipt_issuer`` + ``receipt_presenters``): on a permit
-  for ``/validate`` with ``issue_receipts=true``, sign one consent receipt per
+  for ``/validate`` with ``issue_receipts=true``, sign one consent token per
   data controller with the CM signing key (same kid/alg, same JWKS) and keep a
-  row per receipt so its status can be checked (revoked with the consent,
+  row per token so its status can be checked (revoked with the consent,
   expired by time).
 - **Department role** (``trusted_receipt_issuers``): fetch and cache a trusted
-  issuer's JWKS (refetched on an unknown kid) and check a receipt's status at
+  issuer's JWKS (refetched on an unknown kid) and check a token's status at
   its issuer (short cache). The decision itself is made in VerificationService.
 """
 import logging
@@ -39,7 +43,7 @@ def _aware(dt: datetime) -> datetime:
 
 
 def to_datetime(value) -> Optional[datetime]:
-    """A receipt time claim (epoch seconds or ISO-8601) as an aware datetime."""
+    """A consent-token time claim (epoch seconds or ISO-8601) as an aware datetime."""
     if value is None or isinstance(value, bool):
         return None
     try:
@@ -79,7 +83,7 @@ class ExchangeService(BaseService):
         return None
 
     async def issue(self, consent, decision, presenter: str, now: datetime) -> str:
-        """Sign and record one receipt for ``decision`` (a permit for one
+        """Sign and record one consent token for ``decision`` (a permit for one
         controller of the partner's ``consent``)."""
         consent_exp = _aware(decision.valid_until)
         exp = min(consent_exp, now + timedelta(seconds=_config.receipt_ttl_seconds))
@@ -183,7 +187,7 @@ class ExchangeService(BaseService):
         return None
 
     async def remote_status(self, trusted: TrustedReceiptIssuer, jti: str) -> Optional[str]:
-        """The receipt's status at its issuer (short cache); None if it could
+        """The consent token's status at its issuer (short cache); None if it could
         not be checked."""
         key = (trusted.issuer, jti)
         now = time.monotonic()

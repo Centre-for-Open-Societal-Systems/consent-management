@@ -7,9 +7,9 @@ from .base import BaseORMModelWithId
 
 
 class IssuedReceipt(BaseORMModelWithId):
-    """A consent receipt (compact JWS) this CM issued in the exchange role.
+    """A consent token (compact JWS) this CM issued in the exchange role.
 
-    ``id`` is the receipt ``jti``. Its status follows the consent artefact it
+    ``id`` is the token ``jti``. Its status follows the consent artefact it
     was issued from (revoked with it) and its own ``expires_at``. The JWS
     itself is not stored — it is self-verifying and held by the presenter.
     """

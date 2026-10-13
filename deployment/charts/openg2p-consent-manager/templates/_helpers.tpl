@@ -18,16 +18,46 @@ against the root context ($).
 Agri Stack exchange env — rendered only when its settings are set, so a
 standalone install's manifests are unchanged. Call with the root context.
 */}}
+{{/*
+The Agri Stack exchange role: "exchange", "department", or "" (none, or the
+fields as set). Root context.
+*/}}
+{{- define "consentManager.exchangeRole" -}}
+{{- $r := (.Values.global.agriStackExchange | default dict).role | default "" -}}
+{{- if has $r (list "exchange" "department") }}{{ $r }}{{ end -}}
+{{- end -}}
+
+{{/*
+This install's domain: the CM partner hostname without its first label, e.g.
+trial.openg2p.org. Root context.
+*/}}
+{{- define "consentManager.ownDomain" -}}
+{{- (splitn "." 2 (tpl .Values.global.consentManagerPartnerHostname .))._1 -}}
+{{- end -}}
+
 {{- define "consentManager.exchangeEnv" -}}
 {{- $x := .Values.global.agriStackExchange | default dict -}}
+{{- $role := include "consentManager.exchangeRole" . -}}
 {{- $presenters := $x.receiptPresenters | default list -}}
 {{- if kindIs "string" $presenters }}{{ $presenters = compact (splitList "," (nospace $presenters)) }}{{ end -}}
+{{- $issuer := $x.issuer | default "" -}}
+{{- if eq $role "exchange" }}
+{{- $issuer = $issuer | default $x.defaultIssuer -}}
+{{- if not $presenters }}{{ $presenters = list $x.defaultPresenter }}{{ end -}}
+{{- end -}}
 {{- $issuers := list -}}
 {{- range ($x.trustedReceiptIssuers | default list) }}{{ $issuers = append $issuers . }}{{ end -}}
-{{- with $x.trustedIssuer }}{{ if .issuer }}{{ $issuers = append $issuers (dict "issuer" .issuer "jwks_url" .jwksUrl "presenter" (.presenter | default "")) }}{{ end }}{{ end -}}
-{{- if and $x.issuer $presenters }}
+{{- $t := $x.trustedIssuer | default dict -}}
+{{- if eq $role "department" }}
+{{- $domain := $x.exchangeDomain | default (printf "agrix.%s" (splitn "." 2 (include "consentManager.ownDomain" .))._1) -}}
+{{- $jwks := $t.jwksUrl | default (printf "https://consent-manager-partner.%s/api/consent-manager-partner/.well-known/jwks.json" $domain) -}}
+{{- $issuers = append $issuers (dict "issuer" ($t.issuer | default $x.defaultIssuer) "jwks_url" $jwks "presenter" ($t.presenter | default $x.defaultPresenter)) -}}
+{{- else if $t.issuer }}
+{{- $issuers = append $issuers (dict "issuer" $t.issuer "jwks_url" $t.jwksUrl "presenter" ($t.presenter | default "")) -}}
+{{- end -}}
+{{- if and $issuer $presenters }}
 - name: CONSENT_MANAGER_RECEIPT_ISSUER
-  value: {{ tpl $x.issuer . | quote }}
+  value: {{ tpl $issuer . | quote }}
 - name: CONSENT_MANAGER_RECEIPT_PRESENTERS
   value: {{ toJson $presenters | quote }}
 - name: CONSENT_MANAGER_RECEIPT_TTL_SECONDS
@@ -60,9 +90,10 @@ install's manifests are unchanged. Call with the root context.
 - name: CONSENT_MANAGER_SUBJECT_REQUIRED_IDENTIFIERS
   {{- $ids := $p.requiredSubjectIdentifiers | default list }}
   {{- if kindIs "string" $ids }}{{ $ids = compact (splitList "," (nospace $ids)) }}{{ end }}
+  {{- if and (not $ids) (eq (include "consentManager.exchangeRole" .) "exchange") }}{{ $ids = .Values.global.agriStackExchange.defaultSubjectIdentifiers | default list }}{{ end }}
   value: {{ $ids | toJson | quote }}
 {{- $sa := $p.subjectAuth | default dict }}
-{{- if $sa.enabled }}
+{{- if include "consentManager.subjectAuthOn" . }}
 - name: CONSENT_MANAGER_SUBJECT_AUTH_ENABLED
   value: "true"
 - name: CONSENT_MANAGER_SUBJECT_AUTH_PROVIDER_NAME
@@ -105,11 +136,12 @@ install's manifests are unchanged. Call with the root context.
 
 {{/*
 true when the staff api mounts the subject-auth client key (partner portal +
-national-ID login on). Root context.
+national-ID login on; always on for the exchange role). Root context.
 */}}
 {{- define "consentManager.subjectAuthOn" -}}
 {{- $p := .Values.partnerPortal | default dict -}}
-{{- if and $p.enabled ($p.subjectAuth | default dict).enabled }}true{{ end -}}
+{{- $exchange := eq (include "consentManager.exchangeRole" .) "exchange" -}}
+{{- if and $p.enabled (or ($p.subjectAuth | default dict).enabled $exchange) }}true{{ end -}}
 {{- end -}}
 
 {{- define "consentManagerApi.envVars" -}}

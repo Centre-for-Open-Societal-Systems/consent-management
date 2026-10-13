@@ -11,11 +11,16 @@ data:
   # Runtime config read by the partner portal SPA at boot. Mounted into nginx
   # at /usr/share/nginx/html/config.json. apiBaseUrl empty = same origin: the
   # portal VirtualService routes /consent/v1/partner-portal/ to the staff api.
-  # compositeUrl empty = no use-case catalogue.
+  # compositeUrl empty = no use-case catalogue (exchange role: the composite
+  # at agri-composite.<this domain>).
   config.json: |
     {
       "apiBaseUrl": {{ tpl .Values.apiBaseUrl $ | quote }},
-      "compositeUrl": {{ tpl .Values.compositeUrl $ | quote }},
+      {{- $composite := tpl .Values.compositeUrl $ }}
+      {{- if and (not $composite) (eq (include "consentManager.exchangeRole" $) "exchange") }}
+      {{- $composite = printf "https://agri-composite.%s" (include "consentManager.ownDomain" $) }}
+      {{- end }}
+      "compositeUrl": {{ $composite | quote }},
       "keycloak": {
         "url":      {{ tpl .Values.keycloak.url $ | quote }},
         "realm":    {{ tpl .Values.keycloak.realm $ | quote }},

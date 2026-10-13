@@ -141,9 +141,20 @@ global:
   # Consent tokens (short-lived, one per registry and query; called receipts
   # in the settings and API) between Consent Managers. Leave everything empty for a
   # standalone install: nothing is rendered and CM behaves exactly as before.
-  # `enabled` only shows these settings in Rancher; the values drive behaviour.
+  # `role` picks working defaults: exchange (issues tokens to the composite;
+  # with the partner portal, national-ID login on, Farmer ID required, the
+  # composite at agri-composite.<this domain>) or department (trusts the
+  # exchange CM at exchangeDomain). Empty fields below take those defaults.
+  # Without a role, the fields act as set. `enabled` is the older Rancher switch.
   agriStackExchange:
     enabled: false
+    role: ''
+    defaultIssuer: agri-stack-exchange-cm
+    defaultPresenter: agri-composite
+    defaultSubjectIdentifiers: [FARMER_ID]
+    # Department role: the exchange's domain; empty = agrix.<parent of this
+    # install's domain>, e.g. agrix.openg2p.org for trial.openg2p.org.
+    exchangeDomain: ''
     # Exchange role (the `agrix` install): issuer ID stamped as `iss` on the
     # consent tokens, and the callers (their partner_id / DCI sender_id, e.g.
     # agri-composite) allowed to request them with issue_receipts=true. A list

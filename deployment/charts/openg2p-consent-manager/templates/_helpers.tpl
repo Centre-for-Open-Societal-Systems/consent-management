@@ -58,7 +58,9 @@ install's manifests are unchanged. Call with the root context.
 - name: CONSENT_MANAGER_CONSENT_RECORD_JWKS_URL
   value: {{ tpl $p.consentRecordJwksUrl . | quote }}
 - name: CONSENT_MANAGER_SUBJECT_REQUIRED_IDENTIFIERS
-  value: {{ $p.requiredSubjectIdentifiers | default list | toJson | quote }}
+  {{- $ids := $p.requiredSubjectIdentifiers | default list }}
+  {{- if kindIs "string" $ids }}{{ $ids = compact (splitList "," (nospace $ids)) }}{{ end }}
+  value: {{ $ids | toJson | quote }}
 {{- $sa := $p.subjectAuth | default dict }}
 {{- if $sa.enabled }}
 - name: CONSENT_MANAGER_SUBJECT_AUTH_ENABLED

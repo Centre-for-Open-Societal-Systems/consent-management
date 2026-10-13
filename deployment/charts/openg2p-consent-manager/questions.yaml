@@ -76,7 +76,7 @@ questions:
   label: Signing Key Source
   group: Signing
 - variable: consentManagerApi.signingKey.secretName
-  description: Name of the existing Secret holding the .p12 (key cm_signing.p12) and its password (key password). Create it via Storage → Secrets with a file upload.
+  description: "Name of the existing Secret holding the .p12 (key cm_signing.p12) and its password (key password), in this namespace. Create it first via Storage → Secrets with a file upload."
   type: string
   default: consent-manager-signing
   label: Existing Signing Secret
@@ -230,7 +230,7 @@ questions:
 # partner portal SPA, provisions the Keycloak `partner` realm + client, gives
 # the staff api the partner-realm token settings and turns on evidence storage.
 - variable: partnerPortal.enabled
-  description: "Deploy the partner portal (assisted consent collection by partner users, e.g. bank staff). Also creates the Keycloak realm `partner` with the consent-partner-portal client. Then, once, in Keycloak (realm partner): create realm roles PARTNER_OPERATOR and PARTNER_ADMIN, declare the user-profile attribute partner_id, add a User Attribute mapper partner_id to the client's dedicated scope, and create the partner users (attribute partner_id + a role). Test users: set partnerPortal.testUsers in YAML (username, partnerId, roles); their passwords are generated into the <release>-partner-test-users Secret."
+  description: "Deploy the partner portal (consent collected in person by partner users, e.g. bank staff) with evidence storage. Creates the Keycloak realm `partner` and the consent-partner-portal client. After install, run deployment/scripts/setup-partner-realm.sh once (realm roles, partner_id attribute and mapper, partner users)."
   type: boolean
   default: false
   label: Partner Portal
@@ -246,6 +246,20 @@ questions:
   type: string
   default: ""
   label: Composite URL
+  group: Partner portal
+  show_if: partnerPortal.enabled=true
+- variable: partnerPortal.subjectAuth.enabled
+  description: "The subject's national-ID login through eSignet, mandatory on every request (with the signed form and the staff check). Needs eSignet (and, for testing, the mock identity system) in the namespace; a job registers this CM's client in eSignet."
+  type: boolean
+  default: false
+  label: Require National-ID Login (eSignet)
+  group: Partner portal
+  show_if: partnerPortal.enabled=true
+- variable: partnerPortal.requiredSubjectIdentifiers
+  description: "Comma-separated identifiers every request must carry besides the subject ID, checked by staff in the registry before approving (e.g. FARMER_ID in Agri Stack). Empty = none."
+  type: string
+  default: ""
+  label: Required Subject Identifiers
   group: Partner portal
   show_if: partnerPortal.enabled=true
 - variable: evidence.s3.endpoint

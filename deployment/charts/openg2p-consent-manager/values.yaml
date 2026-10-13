@@ -409,8 +409,9 @@ partnerPortal:
   operatorRole: PARTNER_OPERATOR
   adminRole: PARTNER_ADMIN
   # Other identifiers of the subject every assisted request must carry besides
-  # its subject ID, e.g. [FARMER_ID] in Agri Stack. Staff confirm them in the
-  # registry before approving.
+  # its subject ID, e.g. [FARMER_ID] in Agri Stack (a list, or a comma-separated
+  # string from the Rancher form). Staff confirm them in the registry before
+  # approving.
   requiredSubjectIdentifiers: []
   # Named in the consent record a partner downloads, to check the CM's signature
   # on it: the partner api's public JWKS.
@@ -685,7 +686,8 @@ consentManagerApi:
     secretName: consent-manager-signing
     secretKey: cm_signing.p12
     mountPath: /app/secrets
-    passwordSecretName: consent-manager-signing
+    # Empty: the same Secret as the .p12 (secretName).
+    passwordSecretName: ''
     passwordSecretKey: password
 
   # ── Periodic expiry sweep (CronJob) ─────────────────────────────────────
@@ -745,7 +747,7 @@ consentManagerApi:
         key: '{{ tpl .Values.global.consentDBUserPasswordKey $ }}'
     CONSENT_MANAGER_CM_SIGNING_P12_PASSWORD:
       secretKeyRef:
-        name: '{{ .Values.signingKey.passwordSecretName }}'
+        name: '{{ .Values.signingKey.passwordSecretName | default .Values.signingKey.secretName }}'
         key: '{{ .Values.signingKey.passwordSecretKey }}'
         optional: true
     # CM→AWE service-token secret (the consent-manager client secret).

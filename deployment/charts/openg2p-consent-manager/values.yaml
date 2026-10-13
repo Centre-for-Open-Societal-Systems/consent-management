@@ -522,8 +522,10 @@ partnerPortal:
 # otherwise unset (uploads answer 503). Defaults: the OpenG2P commons Garage
 # and its shared read-write key (Secret `commons-minio`, written by the commons
 # Garage init job — historical name).
-# The bucket must exist and the key must be allowed on it. The commons Garage
-# key cannot create buckets, so create it once (garage pod):
+# The bucket must exist and the key must be allowed on it (the commons Garage
+# key cannot create buckets). The commons-base Garage init job creates
+# consent-evidence and grants garage-key on it; on an older commons-base, once
+# in the garage pod:
 #   garage bucket create consent-evidence
 #   garage bucket allow --read --write --owner consent-evidence --key garage-key
 evidence:

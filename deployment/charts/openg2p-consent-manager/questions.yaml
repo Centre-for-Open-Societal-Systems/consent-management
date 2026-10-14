@@ -164,64 +164,64 @@ questions:
   group: Sanity
   show_if: sanity.enabled=true
 
-# ------------------------ Agri Stack exchange -----------------------
+# ------------------------------ Exchange ----------------------------
 # Off by default: a standalone install leaves this alone. Pick a role and the
-# defaults work with the Agri Stack test scripts; fill the fields only to differ.
+# defaults are the reference values (Agri Stack's); fill the fields only to differ.
 - variable: global.agriStackExchange.role
-  description: "Consent tokens between Consent Managers (Agri Stack). exchange = this CM issues a consent token per registry to the composite (the exchange install); department = this CM accepts the exchange CM's tokens (a registry's install); none = neither."
+  description: "Consent tokens between Consent Managers, for a data exchange (e.g. Agri Stack) whose composites read several registries. exchange = this CM issues a consent token per registry to the composite (the exchange install); department = this CM accepts the exchange CM's tokens (a registry's install); none = neither."
   type: enum
   options: [none, exchange, department]
   default: none
-  label: Agri Stack Exchange Role
-  group: Agri Stack exchange
+  label: Exchange Role
+  group: Exchange
 - variable: global.agriStackExchange.issuer
   description: "The issuer ID on the tokens this CM signs. Empty = agri-stack-exchange-cm."
   type: string
   default: ""
   label: Token Issuer ID
-  group: Agri Stack exchange
+  group: Exchange
   show_if: global.agriStackExchange.role=exchange
 - variable: global.agriStackExchange.receiptPresenters
   description: "Comma-separated partner IDs allowed to ask for tokens. Empty = agri-composite."
   type: string
   default: ""
   label: Token Presenters
-  group: Agri Stack exchange
+  group: Exchange
   show_if: global.agriStackExchange.role=exchange
 - variable: global.agriStackExchange.receiptTtlSeconds
   description: "Token lifetime in seconds (capped by the consent's expiry)."
   type: int
   default: 900
   label: Token Lifetime (seconds)
-  group: Agri Stack exchange
+  group: Exchange
   show_if: global.agriStackExchange.role=exchange
 - variable: global.agriStackExchange.exchangeDomain
   description: "The exchange install's domain, e.g. agrix.example.org. Empty = agrix.<parent of this install's domain> (agrix.openg2p.org for trial.openg2p.org)."
   type: string
   default: ""
   label: Exchange Domain
-  group: Agri Stack exchange
+  group: Exchange
   show_if: global.agriStackExchange.role=department
 - variable: global.agriStackExchange.trustedIssuer.issuer
   description: "The exchange CM's issuer ID. Empty = agri-stack-exchange-cm."
   type: string
   default: ""
   label: Trusted Token Issuer ID
-  group: Agri Stack exchange
+  group: Exchange
   show_if: global.agriStackExchange.role=department
 - variable: global.agriStackExchange.trustedIssuer.presenter
   description: "The only partner allowed to present its tokens here. Empty = agri-composite. Bind it at this CM with a policy per registry (setup_exchange.py does it)."
   type: string
   default: ""
   label: Trusted Token Presenter
-  group: Agri Stack exchange
+  group: Exchange
   show_if: global.agriStackExchange.role=department
 - variable: global.agriStackExchange.trustedIssuer.jwksUrl
   description: "The exchange CM's JWKS URL. Empty = https://consent-manager-partner.<exchange domain>/api/consent-manager-partner/.well-known/jwks.json."
   type: string
   default: ""
   label: Trusted Issuer JWKS URL
-  group: Agri Stack exchange
+  group: Exchange
   show_if: global.agriStackExchange.role=department
 - variable: global.agriStackExchange.receiptStatusCheck
   description: "Check each token's status (revoked/expired) at the exchange CM."
@@ -229,7 +229,7 @@ questions:
   options: [always, never]
   default: always
   label: Token Status Check
-  group: Agri Stack exchange
+  group: Exchange
   show_if: global.agriStackExchange.role=department
 
 # --------------------------- Partner portal -------------------------
@@ -249,7 +249,7 @@ questions:
   group: Partner portal
   show_if: partnerPortal.enabled=true
 - variable: partnerPortal.compositeUrl
-  description: "Optional Agri Stack composite base URL. When set, the portal lists the composite's use cases and can prefill a request from one. Empty = none; for the exchange role, https://agri-composite.<this domain>."
+  description: "Optional composite base URL (an exchange's use-case service). When set, the portal lists the composite's use cases and can prefill a request from one. Empty = none; for the exchange role, https://agri-composite.<this domain>."
   type: string
   default: ""
   label: Composite URL

@@ -168,7 +168,7 @@ questions:
 # Off by default: a standalone install leaves this alone. Pick a role and the
 # defaults are the reference values (Agri Stack's); fill the fields only to differ.
 - variable: global.agriStackExchange.role
-  description: "Consent tokens between Consent Managers, for a data exchange (e.g. Agri Stack) whose composites read several registries. exchange = this CM issues a consent token per registry to the composite (the Exchange install); department = this CM accepts the Exchange CM's tokens (a registry's install); none = neither."
+  description: "Consent tokens between Consent Managers, for a data exchange (e.g. Agri Stack) whose composites read several registries. exchange = this CM issues a consent token per registry to the Composite (the Exchange install); department = this CM accepts the Exchange CM's tokens (a registry's install); none = neither."
   type: enum
   options: [none, exchange, department]
   default: none
@@ -249,7 +249,7 @@ questions:
   group: Partner portal
   show_if: partnerPortal.enabled=true
 - variable: partnerPortal.compositeUrl
-  description: "Optional composite base URL (e.g. the Exchange's use-case service). When set, the portal lists the composite's use cases and can prefill a request from one. Empty = none; for the exchange role, https://agri-composite.<this domain>."
+  description: "Optional Composite base URL (e.g. the Exchange's use-case service). When set, the portal lists the Composite's use cases and can prefill a request from one. Empty = none; for the exchange role, https://agri-composite.<this domain>."
   type: string
   default: ""
   label: Composite URL

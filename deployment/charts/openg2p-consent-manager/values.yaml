@@ -1,5 +1,8 @@
 global:
   namespace: "" # empty => auto-pick install namespace (.Release.Namespace)
+  # Domain every hostname sits under: <service>.<baseDomain>. Inside
+  # commons-services this is commons' own global.baseDomain. Rendered with tpl.
+  baseDomain: '{{ .Values.global.namespace | default .Release.Namespace }}.openg2p.org'
 
   # ── Database (shared commons Postgres) ──────────────────────────────────
   postgresqlHost: commons-postgresql
@@ -11,20 +14,20 @@ global:
 
   # ── Hostname / routing (one per API audience) ───────────────────────────
   # staff console + admin API:
-  consentManagerHostname: 'consent-manager.{{ .Values.global.namespace | default .Release.Namespace }}.openg2p.org'
+  consentManagerHostname: 'consent-manager.{{ tpl .Values.global.baseDomain $ }}'
   # partner-facing PDP (/validate, receipts, JWKS) — verified via PM keys:
-  consentManagerPartnerHostname: 'consent-manager-partner.{{ .Values.global.namespace | default .Release.Namespace }}.openg2p.org'
+  consentManagerPartnerHostname: 'consent-manager-partner.{{ tpl .Values.global.baseDomain $ }}'
   # beneficiary self-service (/my/*, origination) — scaffolded, disabled:
-  consentManagerBeneHostname: 'consent-manager-bene.{{ .Values.global.namespace | default .Release.Namespace }}.openg2p.org'
+  consentManagerBeneHostname: 'consent-manager-bene.{{ tpl .Values.global.baseDomain $ }}'
   # partner portal SPA (assisted consent collection) — used only when
   # partnerPortal.enabled. Also the redirect/web origin of its Keycloak client.
-  consentPartnerPortalHostname: 'consent-partner-portal.{{ .Values.global.namespace | default .Release.Namespace }}.openg2p.org'
+  consentPartnerPortalHostname: 'consent-partner-portal.{{ tpl .Values.global.baseDomain $ }}'
   # Keycloak realm of partner users (partner portal). Used only when
   # partnerPortal.enabled; the partner-keycloak-init block creates it.
   consentPartnerRealm: partner
 
   # ── Keycloak (caller auth) ──────────────────────────────────────────────
-  keycloakBaseUrl: 'https://keycloak.{{ .Values.global.namespace | default .Release.Namespace }}.openg2p.org'
+  keycloakBaseUrl: 'https://keycloak.{{ tpl .Values.global.baseDomain $ }}'
   keycloakRealm: staff
   keycloakIssuerUrl: '{{ tpl .Values.global.keycloakBaseUrl $ }}/realms/{{ tpl .Values.global.keycloakRealm $ }}'
   # The issuer users' tokens carry (public Keycloak URL). Empty => same as
@@ -69,7 +72,7 @@ global:
   # shared AWE database; the callback URL and token URL are derived below. Grant
   # CONSENT_MANAGER_APPROVER to the approver users (keycloak-init users[]).
   aweEnabled: false
-  aweHostname: 'awe.{{ .Values.global.namespace | default .Release.Namespace }}.openg2p.org'
+  aweHostname: 'awe.{{ tpl .Values.global.baseDomain $ }}'
   aweBaseUrl: 'https://{{ tpl .Values.global.aweHostname $ }}'
   aweHttpTimeoutSeconds: 30
   # AWE *approval* policy (workflow) key governing data-share policy changes.
@@ -436,7 +439,7 @@ partnerPortal:
   subjectAuth:
     enabled: false
     providerName: National ID (eSignet)
-    esignetHostname: 'esignet.{{ .Values.global.namespace | default .Release.Namespace }}.openg2p.org'
+    esignetHostname: 'esignet.{{ tpl .Values.global.baseDomain $ }}'
     discoveryUrl: 'https://{{ tpl .Values.partnerPortal.subjectAuth.esignetHostname $ }}/.well-known/openid-configuration'
     # The CM's OIDC client in eSignet (registered by the job below).
     clientId: '{{ .Release.Name }}-consent-partner-portal'

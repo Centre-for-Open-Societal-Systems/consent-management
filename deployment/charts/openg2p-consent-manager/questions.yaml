@@ -1,7 +1,11 @@
 questions:
 # ------------------------------ General -----------------------------
-# The hostname "namespace" segment is auto-derived from the install namespace
-# (.Release.Namespace); override the full hostname here only if it must differ.
+# Hostnames are <service>.<Base Domain>; override one only if it must differ.
+- variable: global.baseDomain
+  description: Domain every hostname sits under (<service>.<Base Domain>). Use the same value as the commons install. Defaults to <namespace>.openg2p.org.
+  type: string
+  label: Base Domain
+  group: General
 - variable: global.consentManagerHostname
   description: Hostname for the Consent Manager API
   type: string

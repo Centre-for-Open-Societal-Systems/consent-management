@@ -168,7 +168,7 @@ questions:
 # Off by default: a standalone install leaves this alone. Pick a role and the
 # defaults are the reference values (Agri Stack's); fill the fields only to differ.
 - variable: global.agriStackExchange.role
-  description: "Consent tokens between Consent Managers, for a data exchange (e.g. Agri Stack) whose composites read several registries. exchange = this CM issues a consent token per registry to the composite (the exchange install); department = this CM accepts the exchange CM's tokens (a registry's install); none = neither."
+  description: "Consent tokens between Consent Managers, for a data exchange (e.g. Agri Stack) whose composites read several registries. exchange = this CM issues a consent token per registry to the composite (the Exchange install); department = this CM accepts the Exchange CM's tokens (a registry's install); none = neither."
   type: enum
   options: [none, exchange, department]
   default: none
@@ -196,14 +196,14 @@ questions:
   group: Exchange
   show_if: global.agriStackExchange.role=exchange
 - variable: global.agriStackExchange.exchangeDomain
-  description: "The exchange install's domain, e.g. agrix.example.org. Empty = agrix.<parent of this install's domain> (agrix.openg2p.org for trial.openg2p.org)."
+  description: "The Exchange install's domain, e.g. agrix.example.org. Empty = agrix.<parent of this install's domain> (agrix.openg2p.org for trial.openg2p.org)."
   type: string
   default: ""
   label: Exchange Domain
   group: Exchange
   show_if: global.agriStackExchange.role=department
 - variable: global.agriStackExchange.trustedIssuer.issuer
-  description: "The exchange CM's issuer ID. Empty = agri-stack-exchange-cm."
+  description: "The Exchange CM's issuer ID. Empty = agri-stack-exchange-cm."
   type: string
   default: ""
   label: Trusted Token Issuer ID
@@ -217,14 +217,14 @@ questions:
   group: Exchange
   show_if: global.agriStackExchange.role=department
 - variable: global.agriStackExchange.trustedIssuer.jwksUrl
-  description: "The exchange CM's JWKS URL. Empty = https://consent-manager-partner.<exchange domain>/api/consent-manager-partner/.well-known/jwks.json."
+  description: "The Exchange CM's JWKS URL. Empty = https://consent-manager-partner.<exchange domain>/api/consent-manager-partner/.well-known/jwks.json."
   type: string
   default: ""
   label: Trusted Issuer JWKS URL
   group: Exchange
   show_if: global.agriStackExchange.role=department
 - variable: global.agriStackExchange.receiptStatusCheck
-  description: "Check each token's status (revoked/expired) at the exchange CM."
+  description: "Check each token's status (revoked/expired) at the Exchange CM."
   type: enum
   options: [always, never]
   default: always
@@ -249,7 +249,7 @@ questions:
   group: Partner portal
   show_if: partnerPortal.enabled=true
 - variable: partnerPortal.compositeUrl
-  description: "Optional composite base URL (an exchange's use-case service). When set, the portal lists the composite's use cases and can prefill a request from one. Empty = none; for the exchange role, https://agri-composite.<this domain>."
+  description: "Optional composite base URL (e.g. the Exchange's use-case service). When set, the portal lists the composite's use cases and can prefill a request from one. Empty = none; for the exchange role, https://agri-composite.<this domain>."
   type: string
   default: ""
   label: Composite URL

@@ -10,9 +10,12 @@ from openg2p_fastapi_common.app import Initializer as BaseInitializer
 
 from .controllers import (
     AweController,
+    ConsentVerificationController,
     DecisionsController,
     LifecycleController,
+    MetaController,
     PartnerController,
+    PartnerPortalController,
     SubjectController,
     VerificationController,
     WellKnownController,
@@ -22,24 +25,33 @@ from .models import (
     AuthContext,
     AweProcessedEvent,
     ConsentArtefact,
+    ConsentEvidence,
     ConsentReceipt,
     ConsentRequest,
     DecisionLog,
+    IssuedReceipt,
     Partner,
     PartnerPolicy,
     RevocationRecord,
+    SubjectAuthSession,
 )
 from .services import (
-    OtpPublisher,
+    AssistedConsentService,
     AweClient,
     AweWebhookService,
+    ConsentRecordService,
     ConsentService,
     CryptoService,
+    EvidenceService,
+    ExchangeService,
     LifecycleService,
+    OtpConsentService,
+    OtpPublisher,
     OtpService,
     PartnerService,
     PolicyService,
     ReceiptService,
+    SubjectAuthService,
     VerificationService,
 )
 
@@ -56,13 +68,20 @@ class Initializer(BaseInitializer):
         PartnerService()
         PolicyService()
         ReceiptService()
+        ExchangeService()  # depends on CryptoService
         VerificationService()
         ConsentService()
         LifecycleService()
+        EvidenceService()
+        SubjectAuthService()
+        AssistedConsentService()
+        ConsentRecordService()  # depends on AssistedConsentService, CryptoService  # depends on Lifecycle/Evidence/Receipt
+        OtpService()
+        if OtpPublisher().enabled:  # test harness: OTP copies in S3/MinIO
+            OtpPublisher.get_component().ensure_bucket()
+        OtpConsentService()  # depends on AssistedConsentService, PartnerService, ReceiptService
         AweClient()
         AweWebhookService()  # depends on PartnerService
-        OtpPublisher()   # no-op unless otp_publish_enabled
-        OtpService()
 
         # Controllers — mounted per API audience (the platform's 4-API pattern).
         # One image, one deployable per audience; each mounts only its routes.
@@ -80,8 +99,13 @@ class Initializer(BaseInitializer):
         if staff:
             # STAFF api — Keycloak staff realm. Policy admin, approvals, decisions.
             PartnerController().post_init()
+            MetaController().post_init()
             AweController().post_init()
             DecisionsController().post_init()
+            # Consent scenario 1: staff verify assisted consents; partner users
+            # (partner realm, own token check) use the partner portal API.
+            ConsentVerificationController().post_init()
+            PartnerPortalController().post_init()
         if beneficiary:
             # BENEFICIARY api — Keycloak beneficiary realm. /my/* + origination.
             SubjectController().post_init()
@@ -96,14 +120,17 @@ class Initializer(BaseInitializer):
                 Partner,
                 PartnerPolicy,
                 ConsentRequest,
+                ConsentEvidence,
                 AuthContext,
+                SubjectAuthSession,
                 ConsentArtefact,
                 ConsentReceipt,
                 RevocationRecord,
                 DecisionLog,
                 AuditLog,
                 AweProcessedEvent,
-                        ):
+                IssuedReceipt,
+            ):
                 await model.create_migrate()
 
             # create_migrate() only creates missing tables; it does not ALTER an
@@ -147,76 +174,164 @@ class Initializer(BaseInitializer):
                         "ON partner_policies (awe_request_id)"
                     )
                 )
-                # The OTP moved onto the consent screen: the subject authenticates
-                # once, where they grant. consent_requests therefore carries the
-                # otp_* state the provider writes.
+                # Approval state machine: the version an approval is checked
+                # against, why a version ended failed/stale/rejected, and at most
+                # one pending version per binding (older duplicates → stale).
+                await conn.execute(
+                    text(
+                        "ALTER TABLE partner_policies ADD COLUMN IF NOT EXISTS "
+                        "base_version INTEGER"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE partner_policies ADD COLUMN IF NOT EXISTS "
+                        "status_reason TEXT"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "UPDATE partner_policies p SET status = 'stale', status_reason = "
+                        "'Superseded by a newer pending version (one pending per binding)' "
+                        "WHERE p.status = 'pending' AND EXISTS (SELECT 1 FROM "
+                        "partner_policies q WHERE q.partner_id = p.partner_id AND "
+                        "q.status = 'pending' AND q.version > p.version)"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS uq_partner_policy_one_pending "
+                        "ON partner_policies (partner_id) WHERE status = 'pending'"
+                    )
+                )
+
+                # ── Single consent, one grant per registry (G2P-5719) ────────
+                # A partner (audience) may now be bound to several controllers,
+                # each binding with its own policy: uniqueness moves from
+                # `audience` to (audience, controller_id). Existing rows are
+                # unchanged — each partner's controller becomes its first binding.
+                await conn.execute(
+                    text(
+                        """
+                        DO $$
+                        BEGIN
+                          IF EXISTS (
+                            SELECT 1 FROM pg_indexes
+                            WHERE tablename = 'partners'
+                              AND indexname = 'ix_partners_audience'
+                              AND indexdef ILIKE 'CREATE UNIQUE INDEX%'
+                          ) THEN
+                            DROP INDEX ix_partners_audience;
+                            CREATE INDEX ix_partners_audience ON partners (audience);
+                          END IF;
+                          IF NOT EXISTS (
+                            SELECT 1 FROM pg_constraint
+                            WHERE conname = 'uq_partner_audience_controller'
+                          ) THEN
+                            ALTER TABLE partners ADD CONSTRAINT uq_partner_audience_controller
+                              UNIQUE (audience, controller_id);
+                          END IF;
+                        END $$;
+                        """
+                    )
+                )
+                # Replay/idempotency is per (jti, data_controller): the same
+                # consent validated by two registries yields two artefacts.
+                await conn.execute(
+                    text(
+                        """
+                        DO $$
+                        BEGIN
+                          ALTER TABLE consent_artefacts
+                            DROP CONSTRAINT IF EXISTS consent_artefacts_object_jti_key;
+                          IF NOT EXISTS (
+                            SELECT 1 FROM pg_constraint
+                            WHERE conname = 'uq_artefact_jti_controller'
+                          ) THEN
+                            ALTER TABLE consent_artefacts ADD CONSTRAINT uq_artefact_jti_controller
+                              UNIQUE (object_jti, controller_id);
+                          END IF;
+                        END $$;
+                        """
+                    )
+                )
+                # Originated consents may carry several grants.
+                for table in ("consent_artefacts", "consent_requests"):
+                    await conn.execute(
+                        text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS grants JSONB")
+                    )
+                    await conn.execute(
+                        text(f"ALTER TABLE {table} ALTER COLUMN controller_id DROP NOT NULL")
+                    )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE decision_logs ADD COLUMN IF NOT EXISTS "
+                        "data_controller VARCHAR(255)"
+                    )
+                )
+                # Agri Stack exchange: the consent token a decision was made
+                # on (department role). NULL for every other decision.
+                for column in ("receipt_jti", "receipt_issuer"):
+                    await conn.execute(
+                        text(
+                            "ALTER TABLE decision_logs ADD COLUMN IF NOT EXISTS "
+                            f"{column} VARCHAR(255)"
+                        )
+                    )
+                # ── Consent scenario 1: assisted requests + staff verification ──
                 for column, ddl in (
+                    ("method", "VARCHAR(20)"),
+                    ("use_case", "VARCHAR(255)"),
+                    ("created_by", "VARCHAR(255)"),
+                    ("partner_audience", "VARCHAR(255)"),
+                    ("submitted_at", "TIMESTAMPTZ"),
+                    ("verified_by", "VARCHAR(255)"),
+                    ("verified_at", "TIMESTAMPTZ"),
+                    ("verification_note", "TEXT"),
+                    # OTP consent (method "otp").
                     ("otp_hash", "VARCHAR(128)"),
                     ("otp_expires_at", "TIMESTAMPTZ"),
-                    ("otp_attempts", "INTEGER DEFAULT 0"),
+                    ("otp_attempts", "INTEGER"),
                     ("otp_verified_at", "TIMESTAMPTZ"),
                     ("otp_channel", "VARCHAR(50)"),
                     ("otp_destination", "VARCHAR(255)"),
                     ("otp_provider", "VARCHAR(50)"),
                     ("otp_reference", "VARCHAR(255)"),
-                    ("otp_debug_code", "VARCHAR(16)"),
                 ):
                     await conn.execute(
                         text(
                             "ALTER TABLE consent_requests ADD COLUMN IF NOT EXISTS "
-                            "%s %s" % (column, ddl)
+                            f"{column} {ddl}"
                         )
                     )
-                # Which authentication a partner's subjects must perform.
-                #
-                # The fetch-time OTP used to be unconditional, so every policy
-                # written before it became a policy decision means "otp" even
-                # though the column is NULL. Backfilling is what keeps this
-                # change from silently dropping a factor for existing partners.
-                #
-                # It must happen EXACTLY ONCE, when the column is introduced —
-                # hence the DO block rather than an unconditional UPDATE. NULL
-                # is a legitimate, deliberate value here: it is how an operator
-                # says "this partner needs no code". An UPDATE ... WHERE
-                # required_auth_method IS NULL re-runs on every startup and
-                # silently re-arms the factor they turned off, which reads as
-                # the setting not sticking. (It did: every active policy had
-                # been forced back to 'otp'.)
                 await conn.execute(
                     text(
-                        "DO $$ BEGIN "
-                        "  IF NOT EXISTS (SELECT 1 FROM information_schema.columns "
-                        "                 WHERE table_name = 'partner_policies' "
-                        "                   AND column_name = 'required_auth_method') "
-                        "  THEN "
-                        "    ALTER TABLE partner_policies ADD COLUMN required_auth_method VARCHAR(20); "
-                        "    UPDATE partner_policies SET required_auth_method = 'otp' "
-                        "     WHERE status = 'active'; "
-                        "  END IF; "
-                        "END $$;"
+                        "CREATE INDEX IF NOT EXISTS ix_consent_requests_partner_audience "
+                        "ON consent_requests (partner_audience)"
                     )
                 )
-                # Why a partner may hold the data. Every policy written before
-                # this one required a subject grant, so "consent" is both the
-                # default and the correct backfill - the column is NOT NULL so
-                # that a basis can never be absent from the record.
+                # Other identifiers of the subject (e.g. the Farmer ID).
+                for table in ("consent_requests", "consent_artefacts"):
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+                            "subject_identifiers JSONB"
+                        )
+                    )
+                # How the subject confirmed, and the request a consent came from.
+                await conn.execute(
+                    text("ALTER TABLE consent_artefacts ADD COLUMN IF NOT EXISTS assurance JSONB")
+                )
                 await conn.execute(
                     text(
-                        "ALTER TABLE partner_policies ADD COLUMN IF NOT EXISTS "
-                        "lawful_basis VARCHAR(40) NOT NULL DEFAULT 'consent'"
+                        "ALTER TABLE consent_artefacts ADD COLUMN IF NOT EXISTS "
+                        "consent_request_id VARCHAR"
                     )
                 )
-                # A policy under a non-consent basis must carry no auth method
-                # (PolicyUpsert refuses it). Rows written before that rule -
-                # some re-armed to 'otp' by the old IS NULL backfill above -
-                # still did. Unlike that backfill this is safe to re-run on
-                # every start: it only ever CLEARS a value that nothing under
-                # legitimate_interest reads, so it cannot change behaviour.
                 await conn.execute(
                     text(
-                        "UPDATE partner_policies SET required_auth_method = NULL "
-                        " WHERE lawful_basis <> 'consent' "
-                        "   AND required_auth_method IS NOT NULL"
+                        "CREATE INDEX IF NOT EXISTS ix_consent_artefacts_consent_request_id "
+                        "ON consent_artefacts (consent_request_id)"
                     )
                 )
             _logger.info("Database migration complete")

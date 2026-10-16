@@ -1,53 +1,67 @@
 import { NavLink, Outlet } from "react-router-dom";
+import { BadgeCheck, FileSearch, Handshake, LogOut, ShieldCheck, Stamp } from "lucide-react";
 import { currentUser, isAdmin, isApprover, isDevMode, logout } from "../auth";
 import "./Layout.css";
 
-const navClass = ({ isActive }: { isActive: boolean }) => (isActive ? "active" : "");
+// The OpenG2P shell, as in the Master Data UI and the partner portal: a black
+// left pane with the full logo and the product name, the menu with icons, and
+// the user at the bottom.
+const navClass = ({ isActive }: { isActive: boolean }) => `nav-item${isActive ? " active" : ""}`;
 
 export default function Layout() {
   const admin = isAdmin();
   const approver = isApprover();
+  const home = admin ? "/partners" : approver ? "/verifications" : "/my/consents";
   return (
-    <div className="layout">
-      <header className="topbar">
-        <div className="topbar-left">
-          <img src="/openg2p-logo.svg" alt="OpenG2P" className="logo" />
-          <span className="product">Consent Manager</span>
-        </div>
-        <nav className="topnav">
+    <div className="shell">
+      <aside className="sidebar">
+        <NavLink to={home} className="brand" title="Consent Manager">
+          <img src="/openg2p-logo-horizontal.svg" alt="OpenG2P" className="brand-logo" />
+          <span className="brand-product">Consent Manager</span>
+        </NavLink>
+        <nav className="nav">
           {admin && (
             <NavLink to="/partners" className={navClass}>
-              Partner policies
+              <Handshake size={18} /> Partner policies
             </NavLink>
           )}
           {approver && (
             <NavLink to="/approvals" className={navClass}>
-              Approvals
+              <Stamp size={18} /> Approvals
+            </NavLink>
+          )}
+          {/* Approvers act on assisted-consent verifications; admins may read. */}
+          {(approver || admin) && (
+            <NavLink to="/verifications" className={navClass}>
+              <BadgeCheck size={18} /> Consent verifications
             </NavLink>
           )}
           {admin && (
             <NavLink to="/decisions" className={navClass}>
-              Decisions
+              <FileSearch size={18} /> Decisions
             </NavLink>
           )}
           <NavLink to="/my/consents" className={navClass}>
-            My Consents
+            <ShieldCheck size={18} /> My Consents
           </NavLink>
         </nav>
-        <div className="topbar-right">
+        <div className="sidebar-user">
           {isDevMode() && <span className="dev-pill">dev</span>}
-          <span className="user">{currentUser()}</span>
-          <button className="btn-secondary" onClick={logout}>
-            Sign out
+          <div className="user">
+            <div className="user-name">{currentUser()}</div>
+            <div className="user-role">{admin ? "Administrator" : approver ? "Approver" : "Staff"}</div>
+          </div>
+          <button type="button" className="sign-out" onClick={logout}>
+            <LogOut size={16} /> Sign out
           </button>
         </div>
-      </header>
+      </aside>
       <main className="content">
-        <Outlet />
+        <div className="content-inner">
+          <Outlet />
+        </div>
+        <footer className="footer">OpenG2P Consent Manager · governs verifiable, policy-bound data sharing</footer>
       </main>
-      <footer className="footer">
-        OpenG2P Consent Manager · governs verifiable, policy-bound data sharing
-      </footer>
     </div>
   );
 }

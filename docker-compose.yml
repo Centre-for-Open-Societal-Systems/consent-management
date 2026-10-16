@@ -1,15 +1,12 @@
 services:
   db:
-    # Survive a Docker Desktop restart; without this the whole
-    # Consent Manager project stays Exited while the farmer stack returns.
-    restart: unless-stopped
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: consent_manager_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5434:5432"
+      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -19,73 +16,31 @@ services:
       retries: 5
 
   backend:
-    # Survive a Docker Desktop restart; without this the whole
-    # Consent Manager project stays Exited while the farmer stack returns.
-    restart: unless-stopped
-    # Lets "localhost:8080" inside the container reach Keycloak on the host,
-    # so service tokens carry the issuer AWE expects (mirrors AWE's own compose).
-    extra_hosts:
-      - "localhost:host-gateway"
     build:
       context: .
       dockerfile: docker/consent-manager-api/Dockerfile
-      args:
-        # HEAD pins 1.2.0, but that release MOVED crypto out of
-        # openg2p_fastapi_common.utils, which this code still imports ->
-        # ModuleNotFoundError: No module named 'openg2p_fastapi_common.utils'.
-        # 'develop' (what the previous commit pinned) still provides utils/crypto.
-        FASTAPI_COMMON_REF: develop
     ports:
       - "8000:8000"
-    # All CONSENT_MANAGER_* config now lives in backend/.env (single source of
-    # truth — edit there and `docker compose up -d`). Only the signing key PEM
-    # stays inline below, because a PEM needs real newlines that an env_file
-    # cannot carry. NOTE: values in `environment:` override `env_file:`, so do
-    # NOT re-add config keys here — they would silently shadow backend/.env.
-    env_file:
-      - backend/.env
     environment:
-      # CM receipt signing key. Without a persistent key, crypto_service mints an
-      # EPHEMERAL key per worker at startup: receipts stop verifying across
-      # workers/restarts, so a receipt verifies only against the worker that
-      # signed it. Dev-grade but persistent. Replace with
-      # your own key (or a .p12 via CONSENT_MANAGER_CM_SIGNING_P12_PATH) for prod.
-      CONSENT_MANAGER_CM_SIGNING_PRIVATE_KEY_PEM: |
-        -----BEGIN PRIVATE KEY-----
-        MC4CAQAwBQYDK2VwBCIEIGvX6MKTEfKq/CME0oJj4cEmu3KfYC2C8v94SrcCQPXh
-        -----END PRIVATE KEY-----
+      CONSENT_MANAGER_DB_HOSTNAME: db
+      CONSENT_MANAGER_DB_PORT: "5432"
+      CONSENT_MANAGER_DB_USERNAME: postgres
+      CONSENT_MANAGER_DB_PASSWORD: postgres
+      CONSENT_MANAGER_DB_DBNAME: consent_manager_db
+      # Local dev: disable Keycloak auth and use an ephemeral signing key.
+      # Provide a .p12 key + Keycloak settings in real deployments (see backend/.env.example).
+      CONSENT_MANAGER_AUTH_ENABLED: "false"
+      CONSENT_MANAGER_NO_OF_WORKERS: "4"
     depends_on:
       db:
         condition: service_healthy
-    networks:
-      default:
-        aliases:
-          # ui/nginx.conf proxies /consent/ to host "consent-manager-api",
-          # but this service is named "backend" -> add the alias it expects.
-          - consent-manager-api
-      openg2p:
-        aliases:
-          - consent-manager-api
 
   frontend:
-    # Survive a Docker Desktop restart; without this the whole
-    # Consent Manager project stays Exited while the farmer stack returns.
-    restart: unless-stopped
-    build: ./ui
-    volumes:
-      # Runtime config (no rebuild needed to repoint Keycloak).
-      - ./ui/public/config.json:/usr/share/nginx/html/config.json:ro
-      - ./ui/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    build: ./frontend
     ports:
-      - "${CM_UI_PORT:-3002}:8080"
+      - "3000:80"
     depends_on:
       - backend
-
-networks:
-  default:
-  openg2p:
-    external: true
-    name: openg2p-developer_default
 
 volumes:
   pgdata:

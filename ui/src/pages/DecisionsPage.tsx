@@ -39,6 +39,7 @@ export default function DecisionsPage() {
               <th>Decision</th>
               <th>Reason</th>
               <th>Partner</th>
+              <th>Controller</th>
               <th>Policy</th>
             </tr>
           </thead>
@@ -55,6 +56,9 @@ export default function DecisionsPage() {
                 </td>
                 <td className="muted">
                   {d.partner_id ? <code className="mono">{d.partner_id.slice(0, 8)}…</code> : "—"}
+                </td>
+                <td className="muted">
+                  {d.data_controller ? <code className="mono">{d.data_controller}</code> : "—"}
                 </td>
                 <td className="muted">{d.policy_version != null ? `v${d.policy_version}` : "—"}</td>
               </tr>

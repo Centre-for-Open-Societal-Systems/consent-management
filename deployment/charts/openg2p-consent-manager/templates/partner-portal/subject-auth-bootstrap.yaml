@@ -1,0 +1,177 @@
+{{- if and (include "consentManager.subjectAuthOn" .) .Values.partnerPortal.subjectAuth.bootstrap.enabled }}
+{{- $sa := .Values.partnerPortal.subjectAuth -}}
+{{- $b := $sa.bootstrap -}}
+{{- $name := printf "%s-subject-auth-bootstrap" .Release.Name -}}
+{{- $secret := tpl $sa.keySecretName . -}}
+{{- /*
+  The CM's OIDC client in eSignet, for the subject's national-ID login in the
+  partner portal (same design as the registry's registrant-auth bootstrap):
+
+    1. the client's RSA key: restored from Secret <keySecretName>, or generated
+       once and stored there (a Secret outlives a reinstall; the key is never
+       rotated here, because eSignet holds its public half);
+    2. the client in eSignet's database (esignet.client_detail): redirect URI,
+       claims, ACR, private_key_jwt with the public key (kid = client ID).
+       eSignet's client API needs the add_oidc_client scope, which an install
+       cannot obtain, so the row is written directly.
+
+  A regular Job (per-revision name, cleaned up after ttlSecondsAfterFinished),
+  not a Helm hook: it waits for eSignet's tables, and a hook would hold the
+  install until then. The api mounts the Secret as optional and reads the key
+  when first needed, so it works as soon as this Job has run.
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels: {{- include "common.labels.standard" (dict "customLabels" .Values.commonLabels "context" $) | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  labels: {{- include "common.labels.standard" (dict "customLabels" .Values.commonLabels "context" $) | nindent 4 }}
+rules:
+  # create cannot be limited by resourceName (the name is not known yet).
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ $secret | quote }}]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  labels: {{- include "common.labels.standard" (dict "customLabels" .Values.commonLabels "context" $) | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-%d" $name .Release.Revision | trunc 63 | trimSuffix "-" }}
+  labels: {{- include "common.labels.standard" (dict "customLabels" .Values.commonLabels "context" $) | nindent 4 }}
+spec:
+  backoffLimit: {{ $b.backoffLimit }}
+  ttlSecondsAfterFinished: {{ $b.ttlSecondsAfterFinished }}
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $name }}
+      volumes:
+        - name: keys
+          emptyDir: {}
+      initContainers:
+        # 1a. Reuse the key kept in the Secret, if any.
+        - name: key-restore
+          image: {{ $b.kubectlImage | quote }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              if kubectl get secret {{ $secret | quote }} >/dev/null 2>&1; then
+                kubectl get secret {{ $secret | quote }} -o jsonpath='{.data.client\.pem}' | base64 -d > /keys/client.pem
+                echo "key-restore: reusing the key in secret/{{ $secret }}"
+              else
+                echo "key-restore: no secret/{{ $secret }} yet; a key will be generated"
+              fi
+          volumeMounts:
+            - name: keys
+              mountPath: /keys
+        # 1b. Generate one only if there is none (the psql image has no openssl).
+        - name: keygen
+          image: {{ $b.keygenImage | quote }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              if [ -s /keys/client.pem ]; then
+                echo "keygen: key restored; not generating"
+              else
+                openssl genrsa -out /keys/client.pem 2048 2>/dev/null
+                echo "keygen: generated a 2048-bit RSA key"
+              fi
+              openssl rsa -in /keys/client.pem -noout -modulus | sed 's/^Modulus=//' > /keys/modulus.hex
+          volumeMounts:
+            - name: keys
+              mountPath: /keys
+        # 1c. Keep it in the Secret before touching eSignet, so a retry reuses it.
+        - name: key-persist
+          image: {{ $b.kubectlImage | quote }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              kubectl create secret generic {{ $secret | quote }} --from-file=client.pem=/keys/client.pem \
+                --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+              echo "key-persist: key stored in secret/{{ $secret }}"
+          volumeMounts:
+            - name: keys
+              mountPath: /keys
+      containers:
+        # 2. The client in eSignet (inserted, or updated to the kept key).
+        - name: esignet-client
+          image: {{ $b.psqlImage | quote }}
+          env:
+            - name: PGHOST
+              value: {{ tpl .Values.global.postgresqlHost $ | quote }}
+            - name: PGDATABASE
+              value: {{ $b.esignetDbName | quote }}
+            - name: PGUSER
+              value: {{ $b.esignetDbUser | quote }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $b.esignetDbSecret | quote }}
+                  key: {{ $b.esignetDbSecretKey | quote }}
+            - name: CLIENT_ID
+              value: {{ tpl $sa.clientId $ | quote }}
+            - name: REDIRECT_URI
+              value: {{ tpl $sa.redirectUri $ | quote }}
+            - name: ESIGNET_BASE
+              value: {{ printf "https://%s" (tpl $sa.esignetHostname $) | quote }}
+            - name: ACR_VALUES
+              value: {{ $sa.acrValues | quote }}
+            - name: CLAIMS
+              value: {{ $b.claims | toJson | quote }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              q() { psql -v ON_ERROR_STOP=1 -qtA "$@"; }
+              end=$(( $(date +%s) + {{ $b.waitSeconds }} ))
+              until [ "$(q -c "SELECT to_regclass('esignet.client_detail') IS NOT NULL" 2>/dev/null || true)" = "t" ]; do
+                [ "$(date +%s)" -lt "$end" ] || { echo "eSignet's table esignet.client_detail did not appear; is eSignet installed?" >&2; exit 1; }
+                echo "waiting for eSignet's database…"; sleep 15
+              done
+              MOD=$(cat /keys/modulus.hex)
+              # JWK modulus: hex -> bytes -> base64url without padding.
+              N=$(q -c "SELECT rtrim(translate(encode(decode('$MOD','hex'),'base64'),E'+/\n','-_'),'=')")
+              JWK="{\"kty\":\"RSA\",\"e\":\"AQAB\",\"use\":\"sig\",\"alg\":\"RS256\",\"kid\":\"$CLIENT_ID\",\"n\":\"$N\"}"
+              q <<SQL
+              INSERT INTO esignet.client_detail
+                (id, name, rp_id, logo_uri, redirect_uris, claims, acr_values, public_key,
+                 grant_types, auth_methods, status, cr_dtimes)
+              VALUES ('$CLIENT_ID', 'Consent Manager partner portal', 'openg2p', '$ESIGNET_BASE/logo.png',
+                      '["$REDIRECT_URI"]', '$CLAIMS', '["$ACR_VALUES"]', '$JWK',
+                      '["authorization_code"]', '["private_key_jwt"]', 'ACTIVE', now())
+              ON CONFLICT (id) DO UPDATE
+                SET redirect_uris = EXCLUDED.redirect_uris, claims = EXCLUDED.claims,
+                    acr_values = EXCLUDED.acr_values, public_key = EXCLUDED.public_key,
+                    status = 'ACTIVE', upd_dtimes = now();
+              SQL
+              echo "eSignet client '$CLIENT_ID' registered (redirect $REDIRECT_URI)."
+          volumeMounts:
+            - name: keys
+              mountPath: /keys
+              readOnly: true
+          resources: {{- toYaml $b.resources | nindent 12 }}
+{{- end }}

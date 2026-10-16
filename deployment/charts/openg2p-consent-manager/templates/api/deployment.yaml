@@ -47,12 +47,23 @@ spec:
           {{- end }}
           env:
             {{- include "consentManagerApi.envVars" . | nindent 12 }}
+            {{- with (include "consentManager.exchangeEnv" $ | trim) }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- if eq (toString .Values.apiAudience) "staff" }}
+            {{- with (include "consentManager.partnerPortalEnv" $ | trim) }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- end }}
             # Per-audience overrides (the 4-API pattern): which controllers this
             # instance mounts, and whether Keycloak auth applies (partner=off).
             - name: CONSENT_MANAGER_API_AUDIENCE
               value: {{ .Values.apiAudience | quote }}
             - name: CONSENT_MANAGER_AUTH_ENABLED
               value: {{ tpl (.Values.authEnabled | toString) $ | quote }}
+            # AWE decision webhook target: always the STAFF api's Service.
+            - name: CONSENT_MANAGER_AWE_CALLBACK_URL
+              value: {{ include "consentManager.aweCallbackUrl" $ | quote }}
             {{- if .Values.signingKeyMounted }}
             - name: CONSENT_MANAGER_CM_SIGNING_P12_PATH
               value: {{ .Values.signingKey.mountPath }}/{{ .Values.signingKey.secretKey }}
@@ -73,19 +84,41 @@ spec:
           {{- if and .Values.readinessProbe .Values.readinessProbe.enabled }}
           readinessProbe: {{- include "common.tplvalues.render" (dict "value" (omit .Values.readinessProbe "enabled") "context" $) | nindent 12 }}
           {{- end }}
-          {{- if and .Values.signingKey.enabled .Values.signingKeyMounted }}
+          {{- $signing := and .Values.signingKey.enabled .Values.signingKeyMounted }}
+          {{- $subjectAuth := and (eq (toString .Values.apiAudience) "staff") (include "consentManager.subjectAuthOn" $) }}
+          {{- if or $signing $subjectAuth }}
           volumeMounts:
+            {{- if $signing }}
             - name: signing-key
               mountPath: {{ .Values.signingKey.mountPath }}
               readOnly: true
+            {{- end }}
+            {{- if $subjectAuth }}
+            - name: subject-auth-key
+              mountPath: {{ $.Values.partnerPortal.subjectAuth.keyMountPath }}
+              readOnly: true
+            {{- end }}
           {{- end }}
-      {{- if and .Values.signingKey.enabled .Values.signingKeyMounted }}
+      {{- if or $signing $subjectAuth }}
       volumes:
+        {{- if $signing }}
         - name: signing-key
           secret:
             secretName: {{ .Values.signingKey.secretName }}
             items:
               - key: {{ .Values.signingKey.secretKey }}
                 path: {{ .Values.signingKey.secretKey }}
+        {{- end }}
+        {{- if $subjectAuth }}
+        # Created by the subject-auth bootstrap Job, possibly after the pod
+        # starts: optional, and the api reads the key when first needed.
+        - name: subject-auth-key
+          secret:
+            secretName: {{ tpl $.Values.partnerPortal.subjectAuth.keySecretName $ }}
+            optional: true
+            items:
+              - key: client.pem
+                path: client.pem
+        {{- end }}
       {{- end }}
 {{- end -}}

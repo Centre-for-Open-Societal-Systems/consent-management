@@ -21,6 +21,14 @@ dependencies:
     version: 0.0.0-develop.60
     repository: https://openg2p.github.io/openg2p-helm
     condition: keycloak-init.enabled
+  # Partner realm + partner portal client (only with the partner portal).
+  # `partner-keycloak-init.enabled` is unset by default, so partnerPortal.enabled
+  # decides; set it false to skip the realm provisioning.
+  - name: keycloak-init
+    alias: partner-keycloak-init
+    version: 0.0.0-develop.60
+    repository: https://openg2p.github.io/openg2p-helm
+    condition: partner-keycloak-init.enabled,partnerPortal.enabled
 icon: https://openg2p.github.io/openg2p-helm/openg2p-logo.png
 keywords:
   - openg2p

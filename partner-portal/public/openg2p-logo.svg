@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 841.89">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: #f4bb1b;
+      }
+
+      .cls-2 {
+        fill: #010101;
+      }
+
+      .cls-3 {
+        fill: #ef7c22;
+      }
+
+      .cls-4 {
+        fill: #989898;
+      }
+
+      .cls-5 {
+        font-family: Montserrat-Bold, Montserrat;
+        font-size: 81.74px;
+        font-weight: 700;
+      }
+    </style>
+  </defs>
+  <g>
+    <g>
+      <path class="cls-2" d="m195.62,366.7h20.62s2.46,36.66-28.15,55.65c0,0-9.49-5.56-23.4-9.49,0,0,27.5-5.4,30.93-46.15Z"/>
+      <circle class="cls-2" cx="158.96" cy="382.41" r="15.55"/>
+    </g>
+    <g>
+      <path class="cls-1" d="m270.44,419.39v20.62s-36.66,2.46-55.65-28.15c0,0,5.56-9.49,9.49-23.4,0,0,5.4,27.66,46.15,30.93Z"/>
+      <circle class="cls-1" cx="254.73" cy="382.73" r="15.55"/>
+    </g>
+    <g>
+      <path class="cls-4" d="m218.3,493.72h-20.62s-2.46-36.66,28.15-55.65c0,0,9.49,5.56,23.4,9.49,0,0-27.66,5.4-30.93,46.15Z"/>
+      <circle class="cls-4" cx="254.96" cy="478.01" r="15.55"/>
+    </g>
+    <g>
+      <path class="cls-3" d="m143.43,441.56v-20.62s36.66-2.46,55.65,28.15c0,0-5.56,9.49-9.49,23.4-.16,0-5.4-27.66-46.15-30.93Z"/>
+      <circle class="cls-3" cx="158.98" cy="478.23" r="15.55"/>
+    </g>
+  </g>
+  <text class="cls-5" transform="translate(304.15 454.54)"><tspan class="cls-2" x="0" y="0">Open</tspan><tspan class="cls-1" x="233.45" y="0">G2P</tspan></text>
+</svg>

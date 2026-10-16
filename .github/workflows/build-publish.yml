@@ -44,7 +44,11 @@ jobs:
 
           {"name": "consent-manager-ui",
            "dockerfile": "ui/Dockerfile",
-           "context": "ui"}
+           "context": "ui"},
+
+          {"name": "consent-manager-partner-portal",
+           "dockerfile": "partner-portal/Dockerfile",
+           "context": "partner-portal"}
         ]
 
       chart-path: deployment/charts/openg2p-consent-manager
@@ -53,6 +57,7 @@ jobs:
       # third-party and stays pinned in values.yaml.
       chart-image-paths: |
         [".ui.image.tag",
+         ".partnerPortal.image.tag",
          ".consentManagerApi.image.tag",
          ".sanity.image.tag"]
 

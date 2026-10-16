@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import type { PartnerCreate } from "../api/types";
 
@@ -12,9 +12,20 @@ const EMPTY: PartnerCreate = {
 };
 
 export default function PartnerOnboardPage() {
-  const [form, setForm] = useState<PartnerCreate>(EMPTY);
+  // ?audience=…&partner_mgmt_id=…&name=… — adding another controller binding
+  // for a partner that already has one.
+  const [params] = useSearchParams();
+  const existingAudience = params.get("audience") || "";
+  const [form, setForm] = useState<PartnerCreate>({
+    ...EMPTY,
+    audience: existingAudience,
+    partner_mgmt_id: params.get("partner_mgmt_id") || "",
+    name: params.get("name") || "",
+  });
   const navigate = useNavigate();
   const qc = useQueryClient();
+  // Controllers are an open set (any registry); offer the ones already bound.
+  const meta = useQuery({ queryKey: ["meta"], queryFn: () => api.getMeta() });
 
   const create = useMutation({
     mutationFn: () =>
@@ -37,11 +48,18 @@ export default function PartnerOnboardPage() {
   return (
     <div>
       <div className="spread">
-        <h1>New binding</h1>
+        <h1>{existingAudience ? "Add controller binding" : "New binding"}</h1>
         <Link to="/partners" className="btn-secondary">
           Cancel
         </Link>
       </div>
+
+      {existingAudience && (
+        <div className="notice notice-info">
+          Adding a binding for partner <code className="mono">{existingAudience}</code> to another
+          controller. It gets its own policy; the partner's other bindings are unchanged.
+        </div>
+      )}
 
       <div className="notice notice-info">
         A binding links a <strong>Partner-Management partner</strong> to a controller. Partner
@@ -63,6 +81,7 @@ export default function PartnerOnboardPage() {
             value={form.partner_mgmt_id ?? ""}
             onChange={set("partner_mgmt_id")}
             placeholder="PARTNER_ACME"
+            disabled={!!existingAudience}
           />
           <div className="hint">
             The partner's reference in Partner Management, used to fetch its signing keys to verify
@@ -77,6 +96,7 @@ export default function PartnerOnboardPage() {
             value={form.audience}
             onChange={set("audience")}
             placeholder="https://registry.example.org"
+            disabled={!!existingAudience}
           />
           <div className="hint">
             Expected <code className="mono">aud</code> claim in the partner's signed consent
@@ -85,16 +105,24 @@ export default function PartnerOnboardPage() {
         </div>
 
         <div className="field">
-          <label>Controller ID</label>
+          <label htmlFor="binding-controller-id">Controller ID</label>
           <input
+            id="binding-controller-id"
             type="text"
+            list="known-controller-ids"
             value={form.controller_id}
             onChange={set("controller_id")}
             placeholder="farmer-registry"
           />
+          <datalist id="known-controller-ids">
+            {(meta.data?.known_controller_ids ?? []).map((c) => (
+              <option key={c} value={c} />
+            ))}
+          </datalist>
           <div className="hint">
             The registry (data controller) this binding is for. One Consent Manager serves several
-            controllers; the same partner may be bound to more than one.
+            controllers; the same partner may be bound to more than one. Pick a controller already
+            in use or type a new one.
           </div>
         </div>
 

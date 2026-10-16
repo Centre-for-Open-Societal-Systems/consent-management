@@ -18,17 +18,25 @@ classifiers = [
 dependencies = [
   "openg2p-fastapi-common >=1.1.4",
   "asyncpg",
+  # SQLAlchemy 2.1 made greenlet optional, so an unpinned resolve pulled 2.1
+  # without it and the API died at import ("requires the greenlet library").
+  # [asyncio] brings greenlet; <2.1 keeps us on the tested line (as in MDS and
+  # the registry platform).
+  "sqlalchemy[asyncio] >=2.0,<2.1",
   # Prebuilt wheel — avoids needing C headers/libpq-dev to compile from source.
   # The app uses the async asyncpg driver; this is only the sync fallback.
   "psycopg2-binary",
   "cryptography >=42.0.0",
   "pyjwt >=2.8.0",
   "httpx",
-  # Only used when otp_publish_enabled: writes each issued OTP to an S3 /
-  # MinIO bucket as a dev-only stand-in for an SMS gateway.
+  # Consent evidence in S3-compatible object storage (Garage), as in the
+  # master data service. Sync client; calls run in a worker thread.
   "boto3",
 ]
 dynamic = ["version"]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "httpx>=0.27", "moto[s3]>=5"]
 
 [project.urls]
 Homepage = "https://openg2p.org"
@@ -40,3 +48,6 @@ path = "src/openg2p_consent_manager/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openg2p_consent_manager"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,168 @@
+/* The OpenG2P shell, as in the Master Data UI: black left pane (full logo,
+   product name, menu with icons, user), content on the right. */
+.shell {
+  --sidebar-width: 280px;
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  width: var(--sidebar-width);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 28px 0 0;
+  background: #000;
+  color: var(--color-white);
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 0 24px 28px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  text-decoration: none;
+}
+.brand-logo {
+  width: 167px;
+  height: auto;
+  display: block;
+}
+.brand-product {
+  margin-top: 24px;
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--color-white);
+}
+
+.nav {
+  flex: 1;
+  overflow-y: auto;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  font-size: 16px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.72);
+  border-left: 3px solid transparent;
+  text-decoration: none;
+  transition: background 0.15s, color 0.15s;
+}
+.nav-item:hover {
+  background: rgba(244, 187, 27, 0.08);
+  color: var(--color-white);
+}
+.nav-item.active {
+  background: rgba(244, 187, 27, 0.14);
+  color: var(--color-yellow);
+  border-left-color: var(--color-yellow);
+}
+
+.sidebar-user {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 24px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.user-name {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--color-white);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-partner {
+  font-size: 13px;
+  color: var(--color-yellow);
+}
+.sign-out {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  padding: 8px 12px;
+  font-size: 15px;
+  color: var(--color-white);
+  background: transparent;
+  border: 1px solid #9ca3af;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.sign-out:hover {
+  background: #4b5563;
+}
+.dev-pill {
+  align-self: flex-start;
+  background: var(--color-orange);
+  color: var(--color-black);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.content-inner {
+  flex: 1;
+  width: 100%;
+  max-width: 1080px;
+  padding: 32px;
+}
+
+.footer {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  padding: 20px 32px;
+  border-top: 1px solid var(--color-grey);
+}
+
+/* Narrow screens: the pane becomes a bar on top. */
+@media (max-width: 768px) {
+  .shell {
+    flex-direction: column;
+  }
+  .sidebar {
+    position: static;
+    height: auto;
+    width: 100%;
+    padding-top: 16px;
+  }
+  .brand {
+    padding-bottom: 16px;
+    margin-bottom: 8px;
+  }
+  .brand-product {
+    margin-top: 12px;
+  }
+  .nav {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .nav-item {
+    border-left: none;
+    border-bottom: 3px solid transparent;
+  }
+  .nav-item.active {
+    border-bottom-color: var(--color-yellow);
+  }
+  .content-inner {
+    padding: 20px 16px;
+  }
+}

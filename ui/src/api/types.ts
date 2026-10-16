@@ -5,7 +5,8 @@ export type PartnerStatus = "active" | "suspended";
 
 // A "partner" in CM is a POLICY BINDING: it binds a Partner-Management partner
 // (partner_mgmt_id) to a controller + data-share policy. Identity/keys live in
-// PM; `name` here is just a display label.
+// PM; `name` here is just a display label. One partner (audience) may have
+// several bindings — one per controller, each with its own policy.
 export interface Partner {
   id: string;
   name?: string | null;
@@ -31,9 +32,14 @@ export interface PartnerUpdate {
 
 export type FetchType = "oneshot" | "periodic";
 
-// A versioned data-share policy's lifecycle: `pending` awaits AWE approval;
-// `active` is in force; `superseded`/`rejected` are historical.
-export type PolicyStatus = "pending" | "active" | "superseded" | "rejected";
+// A versioned data-share policy's lifecycle: `pending` awaits AWE approval (at
+// most one per binding); `active` is in force; `superseded` / `rejected` are
+// historical. `failed`: the submission to AWE failed. `stale`: approved, but the
+// active policy changed after it was submitted, so it was not applied.
+// failed / stale / rejected versions can be resubmitted.
+export type PolicyStatus = "pending" | "active" | "superseded" | "rejected" | "failed" | "stale";
+
+export const RESUBMITTABLE: PolicyStatus[] = ["failed", "stale", "rejected"];
 
 // Durations are ISO-8601 duration strings (e.g. "P1Y", "P30D", "PT12H"),
 // matching the backend. max_fetch_frequency is likewise a string (e.g. "P1D").
@@ -46,22 +52,7 @@ export interface PolicyUpsert {
   fetch_type: FetchType;
   max_fetch_frequency?: string | null;
   data_life?: string | null;
-  // How this partner's subjects must prove who they are on the consent
-  // screen. "otp" demands a one-time code before approval; null means an
-  // id_token is enough.
-  required_auth_method?: AuthMethod;
-  // WHY this partner may hold the data — a different question from how the
-  // subject proves who they are. "consent" needs a subject grant;
-  // "legitimate_interest" seeks none, and the policy's allowed_data_scopes
-  // becomes the ceiling in the grant's place. For an INTERNAL partner only.
-  lawful_basis?: LawfulBasis;
 }
-
-export type LawfulBasis = "consent" | "legitimate_interest";
-
-// The backend rejects anything else rather than storing it — an unrecognised
-// value would read as "no authentication required" and quietly drop a factor.
-export type AuthMethod = "otp" | null;
 
 export interface PartnerPolicy extends PolicyUpsert {
   id: string;
@@ -69,7 +60,27 @@ export interface PartnerPolicy extends PolicyUpsert {
   version: number;
   status: PolicyStatus;
   awe_request_id?: string | null;
+  // Version that was active when this one was created (0 = none).
+  base_version?: number | null;
+  // Why the version ended failed / stale / rejected.
+  status_reason?: string | null;
   effective_from?: string | null;
+  // Values the current rules reject (a version saved before them). Such a
+  // version still loads; it must be fixed before it can be saved again.
+  issues?: string[];
+}
+
+// GET /consent/v1/meta — the allowed values the API validates against, so the
+// forms never hard-code them. `known_*` are open sets: values already in use,
+// offered only as suggestions.
+export interface PolicyMeta {
+  signing_algorithms: string[];
+  fetch_types: string[];
+  partner_statuses: string[];
+  known_controller_ids: string[];
+  known_data_scopes: string[];
+  known_purposes: string[];
+  known_subject_id_types: string[];
 }
 
 // ── AWE approval tasks (approver inbox — proxied to AWE) ──────────────────
@@ -93,6 +104,8 @@ export interface PagedTasks {
   page: number;
   page_size: number;
   pages: number;
+  // false when the CM's AWE approvals are off (no inbox; policies take effect at once).
+  awe_enabled?: boolean;
 }
 
 // ── Decision log (admin status/audit view) ───────────────────────────────
@@ -101,6 +114,7 @@ export interface DecisionLog {
   partner_id?: string | null;
   consent_id?: string | null;
   object_jti?: string | null;
+  data_controller?: string | null;
   decision: "permit" | "deny";
   reason_code: string;
   detail?: string | null;
@@ -126,21 +140,28 @@ export interface Artefact {
   subject_id_type: string;
   subject_id_value: string;
   partner_id: string;
+  controller_id?: string | null;
   purpose: Purpose;
   effective_data_scopes: string[];
+  grants?: ArtefactGrant[] | null;
   status: ConsentStatus;
   source: string;
   valid_from: string;
   valid_until: string;
   created_at: string;
   revoked_at?: string | null;
-  // Subject routes only. `consent` is a decision; `access` records each time
-  // data moved under one, and points at it.
-  record_kind?: "consent" | "access" | null;
-  derived_from?: string | null;
-  activity_count?: number | null;
-  partner_name?: string | null;
-  controller_id?: string | null;
+}
+
+// One grant per data controller (registry) in a consent.
+export interface Grant {
+  data_controller: string;
+  data_scopes: string[];
+}
+
+export interface ArtefactGrant extends Grant {
+  effective_data_scopes: string[];
+  granted_scopes?: string[];
+  policy_version?: number | null;
 }
 
 export interface Paginated<T> {
@@ -163,16 +184,72 @@ export interface ConsentRequest {
   subject_id_type: string;
   subject_id_value: string;
   partner_id: string;
+  controller_id?: string | null;
   purpose: Purpose;
   requested_scopes: string[];
+  // Present when the request spans several controllers (one grant each).
+  grants?: Grant[] | null;
   status: string; // created | authenticated | approved | denied | expired
   valid_from?: string | null;
   valid_until?: string | null;
   created_at: string;
-  // From the partner's policy: "otp" means this screen must collect a code
-  // before it may approve. Null keeps the IdP-token path.
-  required_auth_method?: string | null;
-  otp_channel?: string | null;
-  otp_expires_at?: string | null;
-  otp_verified_at?: string | null;
+}
+
+// ── Consent verifications (assisted consent, staff check of the signed form) ──
+// /consent/v1/verifications — a partner user raised the request in the partner
+// portal and uploaded the evidence; staff approve (creates the consent) or reject.
+export type VerificationStatus = "pending_verification" | "approved" | "rejected";
+
+export interface VerificationEvidence {
+  id: string;
+  kind: "signed_form" | "other" | string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  sha256: string;
+  uploaded_by?: string | null;
+  uploaded_at: string;
+}
+
+export interface VerificationRequest {
+  id: string;
+  status: string;
+  method?: string | null;
+  use_case?: string | null;
+  subject_id: { type: string; value: string };
+  // Other identifiers of the subject (e.g. the Farmer ID); the approver checks
+  // them in the registry.
+  subject_identifiers?: { type: string; value: string }[];
+  purpose: Purpose | string;
+  grants: Grant[];
+  valid_from?: string | null;
+  valid_until?: string | null;
+  created_by?: string | null;
+  created_at: string;
+  submitted_at?: string | null;
+  verified_by?: string | null;
+  verified_at?: string | null;
+  verification_note?: string | null;
+  consent_id?: string | null;
+  partner_audience?: string | null;
+  // The subject's latest national-ID login (eSignet), if the CM has it on.
+  subject_authentication?: {
+    status: string;
+    error?: string | null;
+    provider?: string | null;
+    method?: string | null;
+    acr?: string | null;
+    authenticated_at?: string | null;
+    started_by?: string | null;
+    // As the identity provider returned them at this login, not the registry's.
+    demographics?: Record<string, unknown> | null;
+    demographics_source?: string | null;
+    previous_success?: { authenticated_at?: string | null; method?: string | null } | null;
+  } | null;
+  evidence?: VerificationEvidence[];
+}
+
+export interface OffsetPage<T> {
+  total: number;
+  items: T[];
 }

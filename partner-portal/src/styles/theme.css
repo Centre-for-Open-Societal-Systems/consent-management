@@ -1,0 +1,90 @@
+/*
+ * OpenG2P branding tokens (matches the AWE UI theme).
+ * Colors + weighting per branding/guidelines.txt:
+ *   Yellow  #F5BB1A — generous (accent + primary action)
+ *   Black   #061327 — generous (text + dark surfaces)
+ *   Orange  #F07B1A — medium
+ *   Magenta #88498F — less
+ *   Grey    #C4C4C4 / Light grey #F6F6F6 — surfaces
+ *   Blue    #2A477A — rarely
+ * Fonts: Roboto (body) + Roboto Slab (headings).
+ */
+
+:root {
+  --color-yellow: #f5bb1a;
+  --color-black: #061327;
+  --color-white: #ffffff;
+  --color-orange: #f07b1a;
+  --color-magenta: #88498f;
+  --color-grey: #c4c4c4;
+  --color-light-grey: #f6f6f6;
+  --color-blue: #2a477a;
+
+  --color-bg: var(--color-light-grey);
+  --color-surface: var(--color-white);
+  --color-text: var(--color-black);
+  --color-text-muted: #4a5568;
+  --color-border: var(--color-grey);
+  --color-accent: var(--color-yellow);
+  --color-accent-hover: #e0a800;
+  --color-danger: #c0392b;
+  --color-success: #27ae60;
+
+  --font-body: "Roboto", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-heading: "Roboto Slab", Georgia, serif;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --shadow-sm: 0 1px 2px rgba(6, 19, 39, 0.05);
+  --shadow-md: 0 4px 12px rgba(6, 19, 39, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--color-text);
+  background-color: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-heading);
+  color: var(--color-black);
+  margin: 0 0 16px;
+}
+
+h1 {
+  font-size: 24px;
+  font-weight: 700;
+}
+h2 {
+  font-size: 20px;
+  font-weight: 500;
+}
+h3 {
+  font-size: 16px;
+  font-weight: 500;
+}
+
+a {
+  color: var(--color-black);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--color-orange);
+}

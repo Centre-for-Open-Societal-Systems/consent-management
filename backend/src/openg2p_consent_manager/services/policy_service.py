@@ -35,7 +35,14 @@ class PolicyService(BaseService):
     this covers the policy/scope/validity ceiling.
     """
 
-    def evaluate(self, consent_object, material, request_context) -> PolicyResult:
+    def evaluate(
+        self, consent_object, material, request_context, grant=None
+    ) -> PolicyResult:
+        """Evaluate one grant of ``consent_object`` against the binding in
+        ``material`` (the partner's binding + active policy for that grant's
+        controller). ``grant`` defaults to the consent's legacy single grant."""
+        if grant is None:
+            grant = consent_object.grant_for(consent_object.data_controller or "")
         policy = material.get("policy")
         if policy is None:
             return PolicyResult(False, ReasonCode.unknown_partner, "No active policy")
@@ -44,18 +51,19 @@ class PolicyService(BaseService):
         now = datetime.now(timezone.utc)
         partner = material["partner"]
 
-        # 4. Audience — the object must name this partner (aud) and the module the
-        #    partner was onboarded under (data_controller). One shared CM serves
-        #    many modules; the controller is a per-partner attribute, not global.
+        # 4. Audience — the object must name this partner (aud) and the grant
+        #    must be for the controller this binding (and policy) belongs to. One
+        #    shared CM serves many controllers; a partner has one binding (and
+        #    policy) per controller.
         if consent_object.aud != partner.audience:
             return PolicyResult(
                 False, ReasonCode.audience_mismatch,
                 "aud does not match the partner", policy_version=version,
             )
-        if consent_object.data_controller != partner.controller_id:
+        if grant is None or grant.data_controller != partner.controller_id:
             return PolicyResult(
                 False, ReasonCode.audience_mismatch,
-                "data_controller does not match the partner's onboarded module",
+                "data_controller does not match the partner's binding",
                 policy_version=version,
             )
 
@@ -78,8 +86,9 @@ class PolicyService(BaseService):
                 f"purpose '{purpose_code}' not permitted", policy_version=version,
             )
 
-        # 7. Scope — consented ∩ policy ∩ requested. Never widen.
-        consented = set(consent_object.data_scopes or [])
+        # 7. Scope — granted (for this controller) ∩ policy (for this
+        #    controller) ∩ requested. Never widen.
+        consented = set(grant.data_scopes or [])
         allowed = set(policy.allowed_data_scopes or [])
         effective = consented & allowed
         requested = (

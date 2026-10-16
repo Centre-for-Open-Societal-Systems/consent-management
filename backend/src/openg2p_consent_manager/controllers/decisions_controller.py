@@ -1,5 +1,5 @@
 import logging
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import Depends, Query
 from openg2p_fastapi_common.controller import BaseController
@@ -35,7 +35,7 @@ class DecisionsController(BaseController):
     async def list_decisions(
         self,
         partner_id: Optional[str] = Query(None),
-        decision: Optional[str] = Query(None),
+        decision: Optional[Literal["permit", "deny"]] = Query(None),
         limit: int = Query(50, ge=1, le=200),
     ):
         rows = await self.verification.list_decisions(

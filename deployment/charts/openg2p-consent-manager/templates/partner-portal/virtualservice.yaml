@@ -1,0 +1,54 @@
+{{- /*
+VirtualService for the partner portal host — serves the SPA and the partner
+portal API on one origin (no CORS). Ordered routes (Istio matches in order):
+
+  1. /consent/v1/partner-portal/ → staff API Service (it mounts the partner
+     portal API; partner-realm tokens). Only this prefix is exposed here.
+  2. /                           → partner portal Service (SPA catch-all)
+*/ -}}
+{{- if and .Values.partnerPortal.enabled .Values.consentManagerApi.istio.enabled .Values.consentManagerApi.istio.virtualservice.enabled }}
+{{- $host := tpl .Values.partnerPortal.hostname $ }}
+{{- $gateway := .Values.consentManagerApi.istio.virtualservice.gateway }}
+{{- $apiCtx := dict "Values" (merge (deepCopy .Values.consentManagerApi) (dict "global" .Values.global)) "Chart" .Chart "Release" .Release "Files" .Files "Capabilities" .Capabilities -}}
+{{- $apiName := include "common.names.fullname" $apiCtx -}}
+{{- $apiPort := .Values.consentManagerApi.service.port -}}
+{{- $ppCtx := dict "Values" (merge (deepCopy .Values.partnerPortal) (dict "global" .Values.global)) "Chart" .Chart "Release" .Release "Files" .Files "Capabilities" .Capabilities -}}
+{{- $ppName := include "common.names.fullname" $ppCtx -}}
+{{- $ppPort := .Values.partnerPortal.service.port -}}
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: {{ $ppName }}
+  labels: {{- include "common.labels.standard" (dict "customLabels" .Values.commonLabels "context" .) | nindent 4 }}
+spec:
+  hosts:
+    - {{ $host | quote }}
+  gateways:
+    - {{ $gateway }}
+  http:
+    # ----- Partner portal API (served at the app root, no rewrite) -----
+    - name: partner-portal-api
+      match:
+        - uri:
+            prefix: /consent/v1/partner-portal/
+      headers:
+        request:
+          set:
+            x-forwarded-host: {{ $host | quote }}
+            x-forwarded-proto: https
+      route:
+        - destination:
+            host: {{ $apiName }}
+            port:
+              number: {{ $apiPort }}
+    # ----- SPA: everything else -----
+    - name: partner-portal
+      match:
+        - uri:
+            prefix: /
+      route:
+        - destination:
+            host: {{ $ppName }}
+            port:
+              number: {{ $ppPort }}
+{{- end }}

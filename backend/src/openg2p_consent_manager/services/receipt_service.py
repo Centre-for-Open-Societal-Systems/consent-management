@@ -19,8 +19,11 @@ class ReceiptService(BaseService):
         self.crypto = CryptoService.get_component()
 
     def artefact_document(self, artefact: ConsentArtefact) -> dict:
-        """Canonical JSON-LD representation of a consent artefact (for hashing)."""
-        return {
+        """Canonical JSON-LD representation of a consent artefact (for hashing).
+
+        An originated consent with several grants carries them under ``grants``
+        (``data_controller`` is then the single controller, or None)."""
+        doc = {
             "@context": "https://openg2p.org/contexts/consent_artefact.jsonld",
             "@type": "ConsentArtefact",
             "consent_id": artefact.id,
@@ -39,6 +42,24 @@ class ReceiptService(BaseService):
                 "expiry_timestamp": artefact.valid_until.isoformat(),
             },
         }
+        if artefact.grants is not None:
+            doc["grants"] = artefact.grants
+        return doc
+
+    @staticmethod
+    def _controllers(artefact: ConsentArtefact) -> list:
+        """Receipt data controllers: one per grant, or the artefact's single one.
+        (Kantara / ISO 27560 receipts allow several controllers.)"""
+        if artefact.grants:
+            return [
+                {
+                    "id": g["data_controller"],
+                    "data_categories": g.get("effective_data_scopes") or [],
+                }
+                for g in artefact.grants
+                if g.get("effective_data_scopes")
+            ]
+        return [{"id": artefact.controller_id}]
 
     def build_receipt(self, artefact: ConsentArtefact, partner: Partner) -> ConsentReceipt:
         artefact_hash = sha256_hex(canonical_bytes(self.artefact_document(artefact)))
@@ -51,7 +72,13 @@ class ReceiptService(BaseService):
             "issued_at": artefact.created_at.isoformat()
             if artefact.created_at
             else None,
-            "data_controller": {"id": artefact.controller_id},
+            # Single controller (embedded consents are one artefact per
+            # controller); `data_controllers` lists all of them — several for an
+            # originated consent with grants.
+            "data_controller": {"id": artefact.controller_id}
+            if artefact.controller_id
+            else None,
+            "data_controllers": self._controllers(artefact),
             "subject_id": artefact.subject_id_value,
             "purposes": [
                 {

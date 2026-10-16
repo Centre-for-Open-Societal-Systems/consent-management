@@ -97,20 +97,29 @@ class AweWebhookService(BaseService):
             return "ignored"
 
         approved = event_type in _APPROVE_EVENTS
+        actor = event.get("actor")
+        if event_type == "request_cancelled":
+            reason = "Cancelled in AWE" + (f" by {actor}" if actor else "")
+        elif not approved:
+            reason = "Rejected in AWE" + (f" by {actor}" if actor else "")
+        else:
+            reason = ""
         # artifact_id is the pending PartnerPolicy version id; request_id is the
-        # AWE request. Applying the decision activates or rejects that version.
-        updated = await self.partners.apply_policy_decision(
+        # AWE request. Applying the decision activates, rejects, or (if the
+        # active policy changed meanwhile) marks that version stale.
+        result = await self.partners.apply_policy_decision(
             awe_request_id=request_id,
             artifact_id=artifact_id,
             approved=approved,
+            reason=reason,
         )
-        if not updated:
+        if result is None:
             # Roll back the idempotency claim so a genuine retry can succeed once
             # the correlating policy version exists.
             await self._release_event(event_id)
             raise WebhookError(422, f"No policy for AWE request {request_id or artifact_id}")
 
-        return "approved" if approved else "rejected"
+        return result
 
     async def _claim_event(self, event_id: str, event_type: str, request_id: str) -> bool:
         async with async_session()() as session:

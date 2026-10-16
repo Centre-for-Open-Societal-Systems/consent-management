@@ -11,6 +11,10 @@ _config = Settings.get_config()
 _logger = logging.getLogger(_config.logging_default_logger_name)
 
 
+# Inbox pseudo-status: open OR claimed (both still await the approver).
+ACTIONABLE = "actionable"
+
+
 class AweClientError(Exception):
     """Raised when a call to AWE fails (network, non-2xx, or misconfiguration)."""
 
@@ -24,10 +28,9 @@ class AweClientError(Exception):
 class AweClient(BaseService):
     """Thin async client for the caller-facing AWE runtime endpoints CM needs.
 
-    CM only ever *creates* approval requests; approvers act in AWE's own UI, and
-    terminal outcomes come back via webhook. So this wraps a single endpoint —
-    ``POST /v1/awe/requests`` — plus the client-credentials token fetch that
-    authenticates it. Modelled on the registry's ``AweHelper``.
+    CM creates approval requests (``POST /v1/awe/requests``) and proxies the
+    approver task endpoints for its own inbox; terminal outcomes come back via
+    webhook. Modelled on the registry's ``AweHelper``.
     """
 
     def __init__(self, name="", **kwargs):
@@ -74,10 +77,14 @@ class AweClient(BaseService):
         artifact_id: str,
         context: Dict[str, Any],
         requester: Optional[str] = None,
+        caller_bearer: Optional[str] = None,
     ) -> str:
-        """Submit an onboarding approval request to AWE. Returns the AWE
-        ``request_id``. Raises AweClientError on any failure — the caller is
-        expected to leave the partner un-onboarded (no partial state)."""
+        """Submit a policy-change approval request to AWE. Returns the AWE
+        ``request_id``. Raises AweClientError on any failure — the caller marks
+        the pending version ``failed`` (no orphan pending rows).
+
+        Auth: the acting admin's own bearer (``caller_bearer``) when given and
+        ``awe_forward_caller_token`` is on, else a service token."""
         if not _config.awe_base_url:
             raise AweClientError(500, "awe_base_url is not configured")
 
@@ -93,15 +100,20 @@ class AweClient(BaseService):
         url = f"{_config.awe_base_url.rstrip('/')}/v1/awe/requests"
 
         try:
-            token = await self._bearer()
+            if caller_bearer and _config.awe_forward_caller_token:
+                token = caller_bearer
+            else:
+                token = await self._bearer()
             async with httpx.AsyncClient(timeout=_config.awe_http_timeout_seconds) as client:
                 resp = await client.post(
                     url,
                     json=payload,
                     headers={
                         "Authorization": f"Bearer {token}",
-                        # Idempotent on the CM artifact id so a retried onboarding
-                        # submit doesn't create duplicate AWE requests.
+                        # Idempotent on the policy VERSION id (a new row per
+                        # version), so a retried submit of the same version never
+                        # creates a second AWE request and a later version never
+                        # reuses an earlier one.
                         "Idempotency-Key": f"cm-partner-{artifact_id}",
                     },
                 )
@@ -109,12 +121,7 @@ class AweClient(BaseService):
             raise AweClientError(502, f"AWE unreachable: {exc}") from exc
 
         if resp.status_code >= 300:
-            body = _safe_json(resp)
-            raise AweClientError(
-                resp.status_code,
-                body.get("message", resp.text),
-                body.get("error_code", ""),
-            )
+            raise _error_from(resp)
 
         request_id = _safe_json(resp).get("request_id")
         if not request_id:
@@ -149,27 +156,49 @@ class AweClient(BaseService):
         except httpx.HTTPError as exc:
             raise AweClientError(502, f"AWE unreachable: {exc}") from exc
         if resp.status_code >= 300:
-            body = _safe_json(resp)
-            raise AweClientError(
-                resp.status_code, body.get("message", resp.text), body.get("error_code", "")
-            )
+            raise _error_from(resp)
         return _safe_json(resp)
 
     async def list_my_tasks(
         self,
         bearer: str,
         *,
-        status: Optional[str] = "open",
+        status: Optional[str] = ACTIONABLE,
         artifact_type: Optional[str] = None,
         page: int = 1,
         page_size: int = 25,
     ) -> dict:
-        params = {"assignee": "me", "page": page, "page_size": page_size}
-        if status:
-            params["status"] = status
-        if artifact_type:
-            params["artifact_type"] = artifact_type
-        return await self._proxy("GET", "/v1/awe/tasks", bearer, params=params)
+        """The approver's tasks. ``status=actionable`` (the inbox default) means
+        open OR claimed — a claimed task still awaits this approver's decision.
+        AWE filters on one status per call, so CM fetches up to
+        ``awe_inbox_fetch_limit`` of each, merges newest first and pages here.
+        Any other status is passed through to AWE as is."""
+        if status != ACTIONABLE:
+            params = {"assignee": "me", "page": page, "page_size": page_size}
+            if status:
+                params["status"] = status
+            if artifact_type:
+                params["artifact_type"] = artifact_type
+            return await self._proxy("GET", "/v1/awe/tasks", bearer, params=params)
+
+        items, total = [], 0
+        limit = max(1, min(_config.awe_inbox_fetch_limit, 100))
+        for one in ("open", "claimed"):
+            params = {"assignee": "me", "status": one, "page": 1, "page_size": limit}
+            if artifact_type:
+                params["artifact_type"] = artifact_type
+            data = await self._proxy("GET", "/v1/awe/tasks", bearer, params=params)
+            items.extend(data.get("items") or [])
+            total += int(data.get("total") or 0)
+        items.sort(key=lambda t: t.get("created_at") or "", reverse=True)
+        start = (page - 1) * page_size
+        return {
+            "items": items[start : start + page_size],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "pages": max(1, -(-total // page_size)),
+        }
 
     async def submit_decision(
         self, bearer: str, task_id: str, action: str, comment: Optional[str] = None
@@ -187,6 +216,29 @@ class AweClient(BaseService):
 
     async def get_request_events(self, bearer: str, request_id: str):
         return await self._proxy("GET", f"/v1/awe/requests/{request_id}/events", bearer)
+
+
+def _error_from(resp: httpx.Response) -> AweClientError:
+    """Build an AweClientError from an AWE error response.
+
+    AWE's envelope is ``{"errors": [{"errorCode", "message"}], ...}``; its auth
+    layer (FastAPI) answers ``{"detail": ...}``. Fall back to the raw text."""
+    body = _safe_json(resp)
+    message, code = "", ""
+    errors = body.get("errors")
+    if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+        message = errors[0].get("message") or ""
+        code = errors[0].get("errorCode") or errors[0].get("code") or ""
+    if not message:
+        detail = body.get("detail")
+        if isinstance(detail, str):
+            message = detail
+        elif detail is not None:
+            message = str(detail)
+    if not message:
+        message = body.get("message") or (resp.text or "")[:500] or f"HTTP {resp.status_code}"
+    code = code or body.get("error_code", "")
+    return AweClientError(resp.status_code, message, code)
 
 
 def _safe_json(resp: httpx.Response) -> dict:

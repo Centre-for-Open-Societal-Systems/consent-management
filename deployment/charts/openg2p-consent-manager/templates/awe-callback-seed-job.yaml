@@ -1,23 +1,39 @@
 {{- /*
-Registers CM's per-caller callback secret into the shared AWE database so AWE
-can HMAC-sign the terminal webhooks CM verifies. Upserts one row into AWE's
-`callback_secret` table (id=<aweCallbackSecretId>, secret_hash=<minted HMAC>).
-A plain psql Job — no bespoke seed image needed. Idempotent (ON CONFLICT).
-Runs as a post-install/upgrade hook, early (weight -5), after the AWE DB is up.
+Prepares the shared AWE database for CM's policy-change approvals:
+  1. registers CM's per-caller callback secret — one row in AWE's
+     `callback_secret` (id=<aweCallbackSecretId>, secret_hash=<raw HMAC secret>;
+     AWE signs webhooks with that column's value as is);
+  2. seeds the approval policy <awePolicyChangePolicyKey> (artifact type
+     consent_manager.policy_change): one stage whose approvers are the users
+     holding <aweApprovalPolicy.approverRole> (a client role on
+     <approverClient>, or a realm role) — like the registry's awe_meta_data SQL.
+     Only inserted when absent: an existing policy with that key (e.g. edited in
+     the AWE admin UI) is left untouched. Skipped with aweApprovalPolicy.seed=false.
+A plain psql Job, idempotent. A Helm hook by default; with the hook keys nulled
+(aweSeed.annotations) it is a plain Job named per revision.
 */ -}}
 {{- if .Values.global.aweEnabled }}
+{{- $isHook := include "consentManager.isHook" .Values.aweSeed.annotations }}
+{{- $pol := .Values.global.aweApprovalPolicy }}
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ .Release.Name }}-awe-callback-seed
+  name: {{ .Release.Name }}-awe-callback-seed{{ if not $isHook }}-{{ .Release.Revision }}{{ end }}
   labels: {{- include "common.labels.standard" (dict "customLabels" .Values.commonLabels "context" $) | nindent 4 }}
     app.kubernetes.io/component: awe-callback-seed
+  {{- if $isHook }}
   annotations:
-    "helm.sh/hook": post-install,post-upgrade
-    "helm.sh/hook-weight": "-5"
-    "helm.sh/hook-delete-policy": before-hook-creation
+    {{- range $k, $v := .Values.aweSeed.annotations }}
+    {{- if $v }}
+    {{ $k | quote }}: {{ $v | quote }}
+    {{- end }}
+    {{- end }}
+  {{- end }}
 spec:
-  backoffLimit: 3
+  backoffLimit: {{ .Values.aweSeed.backoffLimit | default 6 }}
+  {{- if .Values.aweSeed.ttlSecondsAfterFinished }}
+  ttlSecondsAfterFinished: {{ .Values.aweSeed.ttlSecondsAfterFinished }}
+  {{- end }}
   template:
     metadata:
       labels: {{- include "common.labels.matchLabels" (dict "customLabels" .Values.podLabels "context" $) | nindent 8 }}
@@ -29,7 +45,7 @@ spec:
       {{- end }}
       containers:
         - name: awe-callback-seed
-          image: jbergknoff/postgresql-client:latest
+          image: {{ .Values.aweSeed.image }}
           imagePullPolicy: IfNotPresent
           env:
             - name: AWE_PGHOST
@@ -54,26 +70,84 @@ spec:
                 secretKeyRef:
                   name: {{ tpl .Values.global.aweCallbackHmacSecretName $ | quote }}
                   key: {{ .Values.global.aweCallbackHmacSecretKey | quote }}
+            - name: SEED_POLICY
+              value: {{ $pol.seed | toString | quote }}
+            - name: POLICY_KEY
+              value: {{ tpl .Values.global.awePolicyChangePolicyKey $ | quote }}
+            - name: POLICY_NAME
+              value: {{ tpl ($pol.name | toString) $ | quote }}
+            - name: STAGE_MODE
+              value: {{ $pol.mode | quote }}
+            - name: STAGE_MODE_VALUE
+              value: {{ $pol.modeValue | toString | quote }}
+            - name: STAGE_SLA_HOURS
+              value: {{ $pol.slaHours | toString | quote }}
+            - name: APPROVER_ROLE
+              value: {{ tpl ($pol.approverRole | toString) $ | quote }}
+            - name: APPROVER_CLIENT
+              value: {{ tpl ($pol.approverClient | toString) $ | quote }}
+            - name: FORBID_SELF_APPROVAL
+              value: {{ $pol.forbidSelfApproval | toString | quote }}
           command: ["sh", "-c"]
           args:
             - |
               set -e
+              PSQL="psql -h $AWE_PGHOST -p $AWE_PGPORT -U $AWE_PGUSER -d $AWE_PGDATABASE -v ON_ERROR_STOP=1"
               echo "Waiting for AWE database ${AWE_PGDATABASE}@${AWE_PGHOST}:${AWE_PGPORT}..."
               until pg_isready -h "$AWE_PGHOST" -p "$AWE_PGPORT" -U "$AWE_PGUSER" -d "$AWE_PGDATABASE" >/dev/null 2>&1; do
                 echo "  waiting for AWE db..."; sleep 3
               done
-              # Wait for AWE to have created its schema (callback_secret table).
-              until psql -h "$AWE_PGHOST" -p "$AWE_PGPORT" -U "$AWE_PGUSER" -d "$AWE_PGDATABASE" \
-                    -tAc "SELECT to_regclass('public.callback_secret')" | grep -q callback_secret; do
-                echo "  waiting for AWE callback_secret table..."; sleep 3
+              # Wait for AWE to have created its schema.
+              until $PSQL -tAc "SELECT to_regclass('public.callback_secret') IS NOT NULL AND to_regclass('public.approver_rule') IS NOT NULL" | grep -q t; do
+                echo "  waiting for AWE tables..."; sleep 3
               done
               echo "Registering callback secret '${CB_ID}' for caller '${CALLER}'..."
-              psql -h "$AWE_PGHOST" -p "$AWE_PGPORT" -U "$AWE_PGUSER" -d "$AWE_PGDATABASE" -v ON_ERROR_STOP=1 \
-                -v id="$CB_ID" -v caller="$CALLER" -v secret="$CB_SECRET" <<'SQL'
+              $PSQL -v id="$CB_ID" -v caller="$CALLER" -v secret="$CB_SECRET" <<'SQL'
               INSERT INTO callback_secret (id, caller_service, secret_hash, status, created_at, updated_at)
               VALUES (:'id', :'caller', :'secret', 'active', now(), now())
               ON CONFLICT (id) DO UPDATE
                 SET secret_hash = EXCLUDED.secret_hash, status = 'active', updated_at = now();
+              SQL
+              if [ "$SEED_POLICY" != "true" ]; then
+                echo "aweApprovalPolicy.seed=false: not seeding approval policy '${POLICY_KEY}'."
+                exit 0
+              fi
+              echo "Seeding approval policy '${POLICY_KEY}' (if absent)..."
+              $PSQL -v key="$POLICY_KEY" -v name="$POLICY_NAME" -v mode="$STAGE_MODE" \
+                -v mode_value="$STAGE_MODE_VALUE" -v sla="$STAGE_SLA_HOURS" \
+                -v role="$APPROVER_ROLE" -v client="$APPROVER_CLIENT" \
+                -v forbid_self="$FORBID_SELF_APPROVAL" <<'SQL'
+              -- Fixed ids keep re-runs idempotent. Nothing is inserted when ANY
+              -- version of this policy key already exists (admin-managed).
+              INSERT INTO approval_policy (id, policy_key, version, name, description, status,
+                artifact_type, created_by, forbid_self_approval, forbid_repeat_approvers,
+                created_at, updated_at)
+              SELECT 'c0a5e000-0000-4000-8000-000000000001', :'key', 1, :'name',
+                'Approves widenings of Consent Manager data-share policies (seeded by the CM chart).',
+                'active', 'consent_manager.policy_change', 'cm-chart-seed',
+                (:'forbid_self')::boolean, FALSE, now(), now()
+              WHERE NOT EXISTS (SELECT 1 FROM approval_policy WHERE policy_key = :'key')
+              ON CONFLICT DO NOTHING;
+
+              INSERT INTO approval_stage (id, policy_id, stage_order, name, mode, mode_value,
+                sla_hours, parallel_group, skip_if, on_empty, on_breach, escalation_rules_json,
+                created_at, updated_at)
+              SELECT 'c0a5e000-0000-4000-8000-000000000101', 'c0a5e000-0000-4000-8000-000000000001',
+                1, 'Consent Manager approvers', :'mode', NULLIF(:'mode_value', '')::int,
+                NULLIF(:'sla', '')::int, NULL, NULL, 'block', NULL, NULL, now(), now()
+              WHERE EXISTS (SELECT 1 FROM approval_policy WHERE id = 'c0a5e000-0000-4000-8000-000000000001')
+              ON CONFLICT DO NOTHING;
+
+              INSERT INTO approver_rule (id, stage_id, rule_type, rule_value, kind, required,
+                created_at, updated_at)
+              SELECT 'c0a5e000-0000-4000-8000-000000000201', 'c0a5e000-0000-4000-8000-000000000101',
+                'role', jsonb_strip_nulls(jsonb_build_object('role', :'role',
+                  'client', NULLIF(:'client', '')))::json, 'approver', FALSE, now(), now()
+              WHERE EXISTS (SELECT 1 FROM approval_stage WHERE id = 'c0a5e000-0000-4000-8000-000000000101')
+              ON CONFLICT DO NOTHING;
+
+              SELECT policy_key, version, status, artifact_type FROM approval_policy
+              WHERE policy_key = :'key';
               SQL
               echo "Done."
           resources:

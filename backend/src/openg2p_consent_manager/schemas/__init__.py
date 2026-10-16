@@ -14,6 +14,7 @@ from .partner import (
     PartnerCreate,
     PartnerResponse,
     PartnerUpdate,
+    PolicyMeta,
     PolicyResponse,
     PolicyUpsert,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "PartnerResponse",
     "PolicyUpsert",
     "PolicyResponse",
+    "PolicyMeta",
     "ConsentRequestCreate",
     "ConsentRequestResponse",
     "AuthenticateRequest",

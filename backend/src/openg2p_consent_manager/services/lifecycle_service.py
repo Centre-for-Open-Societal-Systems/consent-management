@@ -5,7 +5,6 @@ from typing import Optional
 
 import jwt
 from openg2p_fastapi_common.service import BaseService
-from sqlalchemy import func, select
 
 from ..config import Settings
 from ..db import async_session
@@ -16,9 +15,9 @@ from ..models import (
     ConsentArtefact,
     ConsentRequest,
     Partner,
+    PartnerStatus,
     RequestStatus,
 )
-from .otp_service import OtpError, OtpService
 from .partner_service import PartnerService
 from .receipt_service import ReceiptService
 
@@ -41,34 +40,38 @@ class LifecycleService(BaseService):
         self.partners = PartnerService.get_component()
         self.receipts = ReceiptService.get_component()
 
-    @property
-    def otp(self) -> OtpService:
-        """Resolved on use, not in __init__: this service is constructed before
-        OtpService is registered, so binding it early binds None."""
-        return OtpService.get_component()
-
     async def create_request(self, data) -> ConsentRequest:
-        policy = await self.partners.get_policy(data.partner_id)
-        if policy is None:
-            raise LifecycleError(404, "partner or policy not found")
-
         partner = await self.partners.get_partner(data.partner_id)
         if partner is None:
             raise LifecycleError(404, "partner not found")
 
-        # Reject up front anything the policy can never satisfy.
-        if not set(data.requested_scopes).issubset(set(policy.allowed_data_scopes or [])):
-            raise LifecycleError(422, "scope_exceeds_policy")
+        grants = None
+        if data.grants is not None:
+            # One request, several controllers: each grant must be within the
+            # partner's binding + active policy for that controller.
+            grants = [g for g, _ in await self.resolve_grants(partner.audience, data.grants)]
+            requested_scopes = sorted({s for g in grants for s in g["data_scopes"]})
+            controller_id = grants[0]["data_controller"] if len(grants) == 1 else None
+        else:
+            policy = await self.partners.get_policy(data.partner_id)
+            if policy is None:
+                raise LifecycleError(404, "partner or policy not found")
+            # Reject up front anything the policy can never satisfy.
+            if not set(data.requested_scopes).issubset(set(policy.allowed_data_scopes or [])):
+                raise LifecycleError(422, "scope_exceeds_policy")
+            requested_scopes = data.requested_scopes
+            controller_id = partner.controller_id
 
         validity = data.validity or {}
         async with async_session()() as session:
             req = ConsentRequest(
                 subject_id_type=data.subject_id.type,
                 subject_id_value=data.subject_id.value,
-                controller_id=partner.controller_id,
+                controller_id=controller_id,
                 partner_id=data.partner_id,
                 purpose=data.purpose,
-                requested_scopes=data.requested_scopes,
+                requested_scopes=requested_scopes,
+                grants=grants,
                 valid_from=validity.get("valid_from"),
                 valid_until=validity.get("valid_until"),
                 status=RequestStatus.pending.value,
@@ -78,32 +81,37 @@ class LifecycleService(BaseService):
             await session.refresh(req)
             return req
 
-    async def list_subject_requests(
-        self, subject_id_type: str, subject_id_value: str,
-        status: Optional[str] = None, page: int = 1, size: int = 20,
-    ) -> dict:
-        """The subject's own consent requests, newest first.
-
-        Scoped by subject on the query itself, not filtered afterwards: a
-        pending request names the partner, the purpose and every scope being
-        asked for, so returning someone else's row would disclose that they are
-        being asked at all.
-        """
-        async with async_session()() as session:
-            base = select(ConsentRequest).where(
-                ConsentRequest.subject_id_type == subject_id_type,
-                ConsentRequest.subject_id_value == subject_id_value,
+    async def resolve_grants(self, audience: str, requested) -> list:
+        """Check each requested grant (``data_controller`` + ``data_scopes``)
+        against the partner's binding to that controller and its active policy.
+        Returns ``[(grant dict, policy)]``; raises LifecycleError."""
+        resolved = []
+        for g in requested:
+            binding = await self.partners.get_binding(audience, g.data_controller)
+            if binding is None or binding.status != PartnerStatus.active.value:
+                raise LifecycleError(
+                    422, f"partner not bound to data_controller '{g.data_controller}'"
+                )
+            policy = await self.partners.get_policy(binding.id)
+            if policy is None:
+                raise LifecycleError(
+                    404, f"no active policy for data_controller '{g.data_controller}'"
+                )
+            if not set(g.data_scopes).issubset(set(policy.allowed_data_scopes or [])):
+                raise LifecycleError(
+                    422, f"scope_exceeds_policy for data_controller '{g.data_controller}'"
+                )
+            resolved.append(
+                (
+                    {
+                        "data_controller": g.data_controller,
+                        "data_scopes": list(g.data_scopes),
+                        "partner_binding_id": binding.id,
+                    },
+                    policy,
+                )
             )
-            if status:
-                base = base.where(ConsentRequest.status == status)
-            total = int((await session.execute(
-                select(func.count()).select_from(base.subquery()))).scalar() or 0)
-            rows = (await session.execute(
-                base.order_by(ConsentRequest.created_at.desc())
-                .offset((page - 1) * size).limit(size)
-            )).scalars().all()
-            return {"items": rows, "total": total, "page": page, "size": size,
-                    "pages": max(1, (total + size - 1) // size)}
+        return resolved
 
     async def get_request(self, request_id: str) -> Optional[ConsentRequest]:
         async with async_session()() as session:
@@ -140,74 +148,17 @@ class LifecycleService(BaseService):
             await session.refresh(ctx)
             return ctx
 
-    # ── OTP authentication ───────────────────────────────────────────────────
-    # The subject authenticates where they grant. An OTP here is an alternative
-    # to `authenticate(id_token)`, not an extra step after approval: both end in
-    # the same AuthContext, and `approve` will not proceed without one.
+    async def approve(
+        self, request_id: str, granted_scopes: Optional[list] = None,
+        granted_grants: Optional[list] = None,
+    ) -> ConsentArtefact:
+        """Approve a request. ``granted_scopes`` for a single-controller request;
+        ``granted_grants`` (list of ConsentGrant) for a grants request — the
+        subject approves each controller's scopes, and an omitted controller is
+        declined. The resulting artefact holds the approved grants.
 
-    async def issue_otp(self, request_id: str) -> ConsentRequest:
-        """Send the subject a one-time code for this consent request."""
-        async with async_session()() as session:
-            req = await session.get(ConsentRequest, request_id)
-            if req is None:
-                raise LifecycleError(404, "consent request not found")
-            if req.status != RequestStatus.pending.value:
-                raise LifecycleError(409, f"request is '{req.status}'")
-
-            # Re-issuing resets the attempt count: the old code is dead, so
-            # carrying its failures forward would punish the wrong code.
-            req.otp_attempts = 0
-            req.otp_verified_at = None
-            await self.otp.issue(req, req.subject_id_value)
-            await session.commit()
-            await session.refresh(req)
-            return req
-
-    async def verify_otp(self, request_id: str, code: str) -> AuthContext:
-        """Check the code and record it as the subject's authentication."""
-        async with async_session()() as session:
-            req = await session.get(ConsentRequest, request_id)
-            if req is None:
-                raise LifecycleError(404, "consent request not found")
-            if req.status != RequestStatus.pending.value:
-                raise LifecycleError(409, f"request is '{req.status}'")
-            if not req.otp_hash:
-                raise LifecycleError(409, "no OTP has been issued for this request")
-
-            try:
-                await self.otp.verify(req, code)
-            except OtpError as exc:
-                await session.commit()   # persist the attempt count either way
-                raise LifecycleError(exc.status, exc.reason) from exc
-
-            ctx = AuthContext(
-                consent_request_id=request_id,
-                auth_provider=req.otp_provider or "otp",
-                auth_method="otp",
-                auth_timestamp=req.otp_verified_at or datetime.now(timezone.utc),
-                issuer=req.otp_provider or "otp",
-                # There is no ID token in this path. The column is not nullable,
-                # so it carries a hash that identifies the act without implying a
-                # token existed; token_validated stays False for the same reason.
-                id_token_hash=hashlib.sha256(
-                    ("otp:" + request_id).encode("utf-8")).hexdigest(),
-                token_validated=False,
-                verified_claims={
-                    "auth_method": "otp",
-                    "otp_channel": req.otp_channel,
-                    "otp_provider": req.otp_provider,
-                    "otp_reference": req.otp_reference,
-                    "consent_request_id": request_id,
-                    "subject_id_value": req.subject_id_value,
-                },
-            )
-            session.add(ctx)
-            await session.commit()
-            await session.refresh(ctx)
-            _logger.info("Consent request %s: subject authenticated by OTP", request_id)
-            return ctx
-
-    async def approve(self, request_id: str, granted_scopes: list) -> ConsentArtefact:
+        An originated consent is presentable at /validate by its ID
+        (``consent_id``)."""
         async with async_session()() as session:
             req = await session.get(ConsentRequest, request_id)
             if req is None:
@@ -219,17 +170,16 @@ class LifecycleService(BaseService):
             if ctx is None:
                 raise LifecycleError(412, "authentication required before approval")
 
-            # A policy may demand a specific proof. Checking it here rather than
-            # in the UI is the point: the screen can be bypassed, this cannot.
-            required = (await self.partners.get_policy(req.partner_id))
-            required = getattr(required, "required_auth_method", None)
-            if required and (ctx.auth_method or "") != required:
-                raise LifecycleError(
-                    412,
-                    "this partner requires '%s' authentication; the subject "
-                    "authenticated with '%s'" % (required, ctx.auth_method or "none"),
+            if req.grants is not None:
+                artefact = await self._approve_grants(
+                    session, req, ctx, granted_scopes, granted_grants
                 )
+                await session.commit()
+                await session.refresh(artefact)
+                return artefact
 
+            if granted_scopes is None:
+                raise LifecycleError(400, "granted_scopes is required for this request")
             if not set(granted_scopes).issubset(set(req.requested_scopes or [])):
                 raise LifecycleError(400, "granted scopes exceed requested scopes")
 
@@ -258,6 +208,7 @@ class LifecycleService(BaseService):
                 source=ArtefactSource.originated.value,
                 policy_version=policy.version if policy else None,
                 auth_context_id=ctx.id,
+                consent_request_id=req.id,
                 status=ArtefactStatus.active.value,
             )
             receipt = self.receipts.build_receipt(artefact, partner)
@@ -266,7 +217,7 @@ class LifecycleService(BaseService):
             session.add(receipt)
             await session.commit()
             await session.refresh(artefact)
-        return artefact
+            return artefact
 
     async def deny(self, request_id: str, reason: Optional[str]) -> ConsentRequest:
         async with async_session()() as session:
@@ -280,9 +231,94 @@ class LifecycleService(BaseService):
             await session.refresh(req)
             return req
 
+    async def _approve_grants(self, session, req, ctx, granted_scopes, granted_grants):
+        """Build (and add to the session) the artefact + receipt for a grants
+        request. Each approved grant is narrowed to its binding's active policy."""
+        requested = {g["data_controller"]: g for g in req.grants}
+        if granted_grants is not None:
+            approved = {}
+            for g in granted_grants:
+                if g.data_controller not in requested:
+                    raise LifecycleError(
+                        400, f"data_controller '{g.data_controller}' was not requested"
+                    )
+                if not set(g.data_scopes).issubset(
+                    set(requested[g.data_controller]["data_scopes"])
+                ):
+                    raise LifecycleError(
+                        400,
+                        f"granted scopes exceed requested scopes for "
+                        f"'{g.data_controller}'",
+                    )
+                approved[g.data_controller] = list(g.data_scopes)
+        else:
+            # One scope list for every controller: each grant keeps the scopes it
+            # requested that the subject approved.
+            if not set(granted_scopes).issubset(set(req.requested_scopes or [])):
+                raise LifecycleError(400, "granted scopes exceed requested scopes")
+            approved = {
+                c: [s for s in g["data_scopes"] if s in set(granted_scopes)]
+                for c, g in requested.items()
+            }
+
+        grants = []
+        fetch_type = None
+        for controller, rg in requested.items():
+            scopes = approved.get(controller) or []
+            if not scopes:
+                continue  # declined by the subject
+            policy = await self.partners.get_policy(rg["partner_binding_id"])
+            allowed = set(policy.allowed_data_scopes or []) if policy else set()
+            effective = sorted(set(scopes) & allowed)
+            if not effective:
+                continue
+            fetch_type = fetch_type or (policy.fetch_type if policy else None)
+            grants.append(
+                {
+                    "data_controller": controller,
+                    "data_scopes": rg["data_scopes"],
+                    "granted_scopes": sorted(scopes),
+                    "effective_data_scopes": effective,
+                    "partner_binding_id": rg["partner_binding_id"],
+                    "policy_version": policy.version if policy else None,
+                }
+            )
+        if not grants:
+            raise LifecycleError(400, "no granted scope permitted by policy")
+
+        partner = await session.get(Partner, req.partner_id)
+        now = datetime.now(timezone.utc)
+        artefact = ConsentArtefact(
+            subject_id_type=req.subject_id_type,
+            subject_id_value=req.subject_id_value,
+            controller_id=grants[0]["data_controller"] if len(grants) == 1 else None,
+            partner_id=req.partner_id,
+            purpose=req.purpose,
+            data_scopes=req.requested_scopes,
+            effective_data_scopes=sorted(
+                {s for g in grants for s in g["effective_data_scopes"]}
+            ),
+            grants=grants,
+            fetch_type=fetch_type or "oneshot",
+            valid_from=req.valid_from or now,
+            valid_until=req.valid_until or (now + timedelta(days=365)),
+            source=ArtefactSource.originated.value,
+            policy_version=grants[0]["policy_version"] if len(grants) == 1 else None,
+            auth_context_id=ctx.id,
+            consent_request_id=req.id,
+            status=ArtefactStatus.active.value,
+        )
+        receipt = self.receipts.build_receipt(artefact, partner)
+        req.status = RequestStatus.approved.value
+        session.add(artefact)
+        session.add(receipt)
+        return artefact
+
     # ── helpers ──────────────────────────────────────────────────────────────
 
     async def _latest_auth_context(self, session, request_id: str) -> Optional[AuthContext]:
+        from sqlalchemy import select
+
         result = await session.execute(
             select(AuthContext)
             .where(AuthContext.consent_request_id == request_id)
@@ -311,12 +347,5 @@ class LifecycleService(BaseService):
             "oidc_jwks_url not configured — decoding ID token WITHOUT signature "
             "verification (dev only)."
         )
-        try:
-            claims = jwt.decode(id_token, options={"verify_signature": False})
-        except Exception as exc:
-            # The verified branch above turns a bad token into a 401; this one
-            # used to let PyJWT's DecodeError escape as an unhandled 500, so a
-            # malformed token read as "the server broke" rather than "your
-            # token is not a token".
-            raise LifecycleError(401, f"ID token could not be decoded: {exc}")
+        claims = jwt.decode(id_token, options={"verify_signature": False})
         return claims, False

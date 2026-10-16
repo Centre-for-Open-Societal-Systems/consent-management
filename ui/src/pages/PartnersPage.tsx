@@ -7,7 +7,7 @@ import { api } from "../api/client";
 export default function PartnersPage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ["partners"],
-    queryFn: api.listPartners,
+    queryFn: () => api.listPartners(),
   });
 
   return (
@@ -21,8 +21,9 @@ export default function PartnersPage() {
 
       <p className="muted" style={{ marginTop: -8, marginBottom: 24 }}>
         Each binding ties a Partner-Management partner to a data controller and a
-        versioned data-share policy — the ceiling on what that partner may ever receive.
-        Partner identity and signing keys are managed in Partner Management.
+        versioned data-share policy — the ceiling on what that partner may ever receive
+        from that controller. A partner can be bound to several controllers, each with
+        its own policy. Partner identity and signing keys are managed in Partner Management.
       </p>
 
       {isLoading && <div className="loading">Loading…</div>}

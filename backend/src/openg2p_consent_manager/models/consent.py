@@ -37,6 +37,7 @@ class RequestMethod(str, Enum):
     """How the subject confirms the request."""
 
     assisted = "assisted"  # in person; evidence (signed form) verified by staff
+    otp = "otp"  # the CM sends the subject a code; the partner submits it
     sms = "sms"
     self_service = "self_service"
 
@@ -78,6 +79,17 @@ class ConsentRequest(BaseORMModelWithId):
     verified_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     verification_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # ── OTP consent (method "otp"); NULL for other requests ──
+    # Only a salted hash of the code is stored.
+    otp_hash: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    otp_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    otp_attempts: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=0)
+    otp_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    otp_channel: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    otp_destination: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    otp_provider: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    otp_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
 
 class EvidenceKind(str, Enum):

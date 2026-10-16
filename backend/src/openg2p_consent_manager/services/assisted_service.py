@@ -165,7 +165,7 @@ class AssistedConsentService(BaseService):
         (the portal); ``submitted_only`` hides drafts never submitted (staff)."""
         async with async_session()() as session:
             base = select(ConsentRequest).where(
-                ConsentRequest.method == RequestMethod.assisted.value
+                ConsentRequest.method.in_(self._PARTNER_METHODS)
             )
             if audience is not None:
                 base = base.where(ConsentRequest.partner_audience == audience)
@@ -196,11 +196,22 @@ class AssistedConsentService(BaseService):
             return None
         return req
 
+    # Partner-raised requests: assisted (signed form + staff) and otp (the
+    # subject's one-time code, verified through OtpConsentService).
+    _PARTNER_METHODS = (RequestMethod.assisted.value, RequestMethod.otp.value)
+
     @staticmethod
     def _visible(req: Optional[ConsentRequest], audience: Optional[str]) -> bool:
-        if req is None or req.method != RequestMethod.assisted.value:
+        if req is None or req.method not in AssistedConsentService._PARTNER_METHODS:
             return False
         return audience is None or req.partner_audience == audience
+
+    @staticmethod
+    def _assisted_only(req: ConsentRequest) -> None:
+        """Evidence and staff verification belong to the assisted flow."""
+        if req.method == RequestMethod.otp.value:
+            raise LifecycleError(
+                409, "an OTP request is confirmed with POST …/verify-otp, not submitted")
 
     async def consent_ids(self, request_ids: list) -> dict:
         """{request id: consent id} for requests that produced a consent."""
@@ -221,6 +232,7 @@ class AssistedConsentService(BaseService):
             req = await session.get(ConsentRequest, request_id, with_for_update=True)
             if not self._visible(req, audience):
                 raise LifecycleError(404, "not_found")
+            self._assisted_only(req)
             if req.status != RequestStatus.pending.value:
                 raise LifecycleError(409, f"request is '{req.status}'")
             forms = (
@@ -292,6 +304,7 @@ class AssistedConsentService(BaseService):
         req = await self.get_request(request_id, audience)
         if req is None:
             raise LifecycleError(404, "not_found")
+        self._assisted_only(req)
         if req.status != RequestStatus.pending.value:
             raise LifecycleError(409, f"request is '{req.status}'")
         self.evidence.require_store()

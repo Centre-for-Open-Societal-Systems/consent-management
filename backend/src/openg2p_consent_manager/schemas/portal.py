@@ -1,7 +1,7 @@
 """Partner portal (consent scenario 1) and staff verification of assisted
 consents."""
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -46,6 +46,10 @@ class AssistedRequestCreate(BaseModel):
     grants: List[ConsentGrant] = Field(..., min_length=1)
     validity: Optional[Validity] = None
     use_case: Optional[str] = Field(None, max_length=255)
+    # How the subject confirms. "assisted" (default): signed form + staff
+    # verification. "otp": the CM sends the subject a one-time code now, and
+    # the partner's POST …/{id}/verify-otp with that code grants the consent.
+    method: Literal["assisted", "otp"] = "assisted"
 
     @field_validator("subject_id")
     @classmethod
@@ -150,6 +154,11 @@ class AssistedRequestResponse(BaseModel):
     verification_note: Optional[str] = None
     consent_id: Optional[str] = None
     subject_authentication: Optional[SubjectAuthSummary] = None
+    # method "otp" only: where the code went and when it stops working (the
+    # code itself is never returned).
+    otp_channel: Optional[str] = None
+    otp_expires_at: Optional[datetime] = None
+    otp_attempts_left: Optional[int] = None
 
 
 class AssistedRequestDetail(AssistedRequestResponse):

@@ -45,6 +45,9 @@ from .services import (
     EvidenceService,
     ExchangeService,
     LifecycleService,
+    OtpConsentService,
+    OtpPublisher,
+    OtpService,
     PartnerService,
     PolicyService,
     ReceiptService,
@@ -73,6 +76,10 @@ class Initializer(BaseInitializer):
         SubjectAuthService()
         AssistedConsentService()
         ConsentRecordService()  # depends on AssistedConsentService, CryptoService  # depends on Lifecycle/Evidence/Receipt
+        OtpService()
+        if OtpPublisher().enabled:  # test harness: OTP copies in S3/MinIO
+            OtpPublisher.get_component().ensure_bucket()
+        OtpConsentService()  # depends on AssistedConsentService, PartnerService, ReceiptService
         AweClient()
         AweWebhookService()  # depends on PartnerService
 
@@ -281,6 +288,15 @@ class Initializer(BaseInitializer):
                     ("verified_by", "VARCHAR(255)"),
                     ("verified_at", "TIMESTAMPTZ"),
                     ("verification_note", "TEXT"),
+                    # OTP consent (method "otp").
+                    ("otp_hash", "VARCHAR(128)"),
+                    ("otp_expires_at", "TIMESTAMPTZ"),
+                    ("otp_attempts", "INTEGER"),
+                    ("otp_verified_at", "TIMESTAMPTZ"),
+                    ("otp_channel", "VARCHAR(50)"),
+                    ("otp_destination", "VARCHAR(255)"),
+                    ("otp_provider", "VARCHAR(50)"),
+                    ("otp_reference", "VARCHAR(255)"),
                 ):
                     await conn.execute(
                         text(

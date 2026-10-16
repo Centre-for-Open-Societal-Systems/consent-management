@@ -7,6 +7,9 @@ from .crypto_service import CryptoService
 from .evidence_service import EvidenceError, EvidenceService
 from .exchange_service import ExchangeService
 from .lifecycle_service import LifecycleError, LifecycleService
+from .otp_consent_service import OtpConsentService
+from .otp_publisher import OtpPublisher
+from .otp_service import OtpError, OtpService
 from .partner_service import (
     PartnerConflict,
     PartnerService,
@@ -41,5 +44,9 @@ __all__ = [
     "EvidenceService",
     "EvidenceError",
     "AssistedConsentService",
+    "OtpService",
+    "OtpPublisher",
+    "OtpError",
+    "OtpConsentService",
     "artefact_status",
 ]

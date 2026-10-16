@@ -251,6 +251,29 @@ class Settings(BaseSettings):
     # (the public JWKS of the CM partner API), named in the record's README.
     consent_record_jwks_url: str = ""
 
+    # ── OTP consent: partner raises a request, the CM sends the subject a code,
+    # the partner submits it and the consent is granted (partner portal API) ──
+    otp_provider: str = "fayda"  # fayda | internal (both only log the code for now)
+    otp_length: int = 6
+    otp_ttl_sec: int = 300
+    otp_max_attempts: int = 3
+    # Mixed into the stored hash so a leaked row cannot be brute-forced offline.
+    # Set per environment.
+    otp_salt: str = "change-me-per-environment"
+    otp_channel: str = "PHONE"
+    # TEST HARNESS (no SMS gateway yet): each issued OTP is also written as a
+    # JSON object to an S3/MinIO bucket under otp/, as in OAN Gen 1 / A2C, so a
+    # tester or partner sandbox can read it. Off by default; never on where
+    # real subjects exist - anything that can read the bucket reads live OTPs.
+    otp_publish_enabled: bool = False
+    otp_publish_bucket: str = "a2c-webhook"
+    otp_publish_prefix: str = "otp/"
+    otp_publish_region: str = "us-east-1"
+    otp_publish_endpoint_url: str = ""  # e.g. http://minio:9000; empty = AWS
+    otp_publish_access_key: str = ""
+    otp_publish_secret_key: str = ""
+    otp_publish_id_type: str = "FIN"
+
     # ── Subject authentication with national ID (consent scenario 1, phase 2) ──
     # The subject (e.g. a farmer at the bank) proves who they are through an
     # OIDC provider such as eSignet (OTP, biometrics) during an assisted request:

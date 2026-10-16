@@ -23,12 +23,14 @@ from ..schemas.portal import (
     SubjectAuthStart,
     SubjectAuthSummary,
 )
+from ..schemas.otp_consent import OtpConsentGranted, VerifyOtpRequest
 from ..services import (
     AssistedConsentService,
     ConsentRecordService,
     ConsentService,
     EvidenceError,
     LifecycleError,
+    OtpConsentService,
     SubjectAuthService,
 )
 from .assisted_views import (
@@ -56,6 +58,7 @@ class PartnerPortalController(BaseController):
         self.consents = ConsentService.get_component()
         self.subject_auth = SubjectAuthService.get_component()
         self.records = ConsentRecordService.get_component()
+        self.otp_consents = OtpConsentService.get_component()
         self.router.prefix += "/consent/v1/partner-portal"
         self.router.tags += ["Partner portal"]
 
@@ -88,6 +91,16 @@ class PartnerPortalController(BaseController):
         )
         route(
             "/consent-requests/{request_id}/cancel", self.cancel, "POST",
+            AssistedRequestResponse,
+        )
+        # method "otp": the subject's one-time code (sent when the request was
+        # raised) grants the consent — no evidence, no staff verification.
+        route(
+            "/consent-requests/{request_id}/verify-otp", self.verify_otp, "POST",
+            OtpConsentGranted, 201,
+        )
+        route(
+            "/consent-requests/{request_id}/resend-otp", self.resend_otp, "POST",
             AssistedRequestResponse,
         )
         # The subject's national-ID login (eSignet): start it, follow it; the
@@ -132,7 +145,10 @@ class PartnerPortalController(BaseController):
         self, data: AssistedRequestCreate, user: PartnerUser = Depends(current_partner_user),
     ):
         try:
-            req = await self.assisted.create_request(user.partner_id, user.username, data)
+            if data.method == "otp":
+                req = await self.otp_consents.create_request(user.partner_id, user.username, data)
+            else:
+                req = await self.assisted.create_request(user.partner_id, user.username, data)
         except LifecycleError as exc:
             return error(exc.status_code, exc.detail)
         return JSONResponse(
@@ -227,6 +243,29 @@ class PartnerPortalController(BaseController):
     async def cancel(self, request_id: str, user: PartnerUser = Depends(current_partner_user)):
         try:
             req = await self.assisted.cancel(request_id, user.partner_id)
+        except LifecycleError as exc:
+            return error(exc.status_code, exc.detail)
+        return await self._request_response(req)
+
+    async def verify_otp(
+        self, request_id: str, data: VerifyOtpRequest,
+        user: PartnerUser = Depends(current_partner_user),
+    ):
+        try:
+            _, artefact = await self.otp_consents.verify_otp(
+                request_id, user.partner_id, user.username, data.otp
+            )
+        except LifecycleError as exc:
+            return error(exc.status_code, exc.detail)
+        receipt = await self.consents.get_receipt_by_consent(artefact.id)
+        body = OtpConsentGranted(
+            **consent_view(artefact, {}).model_dump(), receipt_id=receipt.id if receipt else None
+        )
+        return JSONResponse(status_code=201, content=body.model_dump(mode="json"))
+
+    async def resend_otp(self, request_id: str, user: PartnerUser = Depends(current_partner_user)):
+        try:
+            req = await self.otp_consents.resend_otp(request_id, user.partner_id)
         except LifecycleError as exc:
             return error(exc.status_code, exc.detail)
         return await self._request_response(req)

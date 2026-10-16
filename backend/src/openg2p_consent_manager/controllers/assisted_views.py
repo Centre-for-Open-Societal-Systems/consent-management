@@ -49,6 +49,21 @@ def request_fields(req, consent_id: Optional[str] = None, subject_auth: Optional
         "verification_note": req.verification_note,
         "consent_id": consent_id,
         "subject_authentication": subject_auth,
+        **otp_fields(req),
+    }
+
+
+def otp_fields(req) -> dict:
+    """Code state of a method "otp" request; nothing for other requests."""
+    if getattr(req, "method", None) != "otp":
+        return {}
+    from ..config import Settings
+
+    attempts = getattr(req, "otp_attempts", None) or 0
+    return {
+        "otp_channel": req.otp_channel,
+        "otp_expires_at": req.otp_expires_at,
+        "otp_attempts_left": max(0, Settings.get_config().otp_max_attempts - attempts),
     }
 
 

@@ -88,6 +88,9 @@ class RequestContext(BaseModel):
     # the consent's subject, the values must match (else deny subject_mismatch).
     # A different type is resolved by the registry, not CM.
     subject_id: Optional[SubjectId] = None
+    # The use the caller is about to make ({"code": ...}). Its code must equal
+    # the consent's purpose code (else deny purpose_mismatch).
+    purpose: Optional[Dict[str, Any]] = None
 
 
 class ValidateRequest(BaseModel):
@@ -143,6 +146,8 @@ class Decision(BaseModel):
     receipt_id: Optional[str] = None
     # The consent's subject — registries check it against what they search.
     subject_id: Optional[SubjectId] = None
+    # The consent's purpose: the use the caller may make of the data.
+    purpose: Optional[Dict[str, Any]] = None
     # The controller this decision is for (the selected grant), when known.
     data_controller: Optional[str] = None
     effective_data_scopes: Optional[List[str]] = None

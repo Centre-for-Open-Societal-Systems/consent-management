@@ -133,6 +133,13 @@ class VerificationService(BaseService):
                 "request_context.subject_id does not match the consent subject",
                 now, ctx_hash, jti=obj.jti, data_controller=controller,
             )
+        # 1c. Purpose — the caller's declared use must be the consent's.
+        mismatch = self._purpose_mismatch(parsed, obj.purpose)
+        if mismatch:
+            return await self._deny(
+                ReasonCode.purpose_mismatch, mismatch,
+                now, ctx_hash, jti=obj.jti, data_controller=controller,
+            )
 
         # 2. Known party — the partner's binding to this controller + the
         #    binding's policy (cached). Policies are per (audience, controller).
@@ -367,6 +374,11 @@ class VerificationService(BaseService):
                 "request_context.subject_id does not match the consent subject",
                 now, ctx_hash, **log,
             )
+        mismatch = self._purpose_mismatch(parsed, artefact.purpose)
+        if mismatch:
+            return await self._deny(
+                ReasonCode.purpose_mismatch, mismatch, now, ctx_hash, **log
+            )
 
         stored = artefact.grants or [
             {
@@ -431,7 +443,7 @@ class VerificationService(BaseService):
         decisions = {
             controller: Decision(
                 decision="permit", reason_code=ReasonCode.ok, consent_id=artefact.id,
-                subject_id=subject, data_controller=controller,
+                subject_id=subject, purpose=artefact.purpose, data_controller=controller,
                 effective_data_scopes=scopes, valid_until=artefact.valid_until,
                 policy_version=version, evaluated_at=now,
             )
@@ -468,8 +480,8 @@ class VerificationService(BaseService):
             )
         return Decision(
             decision="permit", reason_code=ReasonCode.ok, consent_id=artefact.id,
-            receipt_id=stored_receipt, subject_id=subject, valid_until=artefact.valid_until,
-            evaluated_at=now, receipts=receipts, grants=grants,
+            receipt_id=stored_receipt, subject_id=subject, purpose=artefact.purpose,
+            valid_until=artefact.valid_until, evaluated_at=now, receipts=receipts, grants=grants,
         )
 
     async def _stored_receipt_id(self, consent_id: str) -> Optional[str]:
@@ -712,6 +724,7 @@ class VerificationService(BaseService):
             decision="permit", reason_code=ReasonCode.ok,
             consent_id=artefact.id,
             subject_id=SubjectId(type=artefact.subject_id_type, value=artefact.subject_id_value),
+            purpose=artefact.purpose,
             data_controller=artefact.controller_id,
             effective_data_scopes=artefact.effective_data_scopes,
             valid_until=artefact.valid_until, policy_version=artefact.policy_version,
@@ -773,11 +786,25 @@ class VerificationService(BaseService):
             decision="permit", reason_code=ReasonCode.ok,
             consent_id=artefact.id, receipt_id=receipt.id,
             subject_id=SubjectId(type=obj.subject_id.type, value=obj.subject_id.value),
+            purpose=artefact.purpose,
             data_controller=grant.data_controller,
             effective_data_scopes=result.effective_scopes,
             valid_until=artefact.valid_until, policy_version=result.policy_version,
             evaluated_at=now,
         )
+
+    @staticmethod
+    def _purpose_mismatch(parsed: ValidateRequest, consent_purpose) -> Optional[str]:
+        """A detail when the caller's declared use (request_context.purpose)
+        is not the consent's purpose; None when it matches or is not given."""
+        ctx = parsed.request_context
+        wanted = (ctx.purpose or {}).get("code") if ctx and ctx.purpose else None
+        if wanted is None:
+            return None
+        given = (consent_purpose or {}).get("code")
+        if wanted != given:
+            return f"the consent is for purpose '{given}', not '{wanted}'"
+        return None
 
     async def _deny(
         self, reason: ReasonCode, detail: Optional[str], now, ctx_hash,

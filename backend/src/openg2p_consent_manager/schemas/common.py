@@ -18,6 +18,8 @@ class ReasonCode(str, Enum):
     # The policy's consent_method does not accept this kind of consent (e.g.
     # a partner-signed consent_jws for an "otp" partner).
     consent_method_not_allowed = "consent_method_not_allowed"
+    # request_context.purpose is not the purpose the subject consented to.
+    purpose_mismatch = "purpose_mismatch"
     expired = "expired"
     revoked = "revoked"
     replay = "replay"

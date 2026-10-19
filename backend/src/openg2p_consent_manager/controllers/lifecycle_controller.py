@@ -15,10 +15,8 @@ from ..schemas.lifecycle import (
     ConsentRequestCreate,
     ConsentRequestResponse,
     DenyRequest,
-    IssueOtpResponse,
     RevokeRequest,
     RevokeResponse,
-    VerifyOtpRequest,
 )
 from ..services import ConsentService, LifecycleError, LifecycleService
 
@@ -60,26 +58,6 @@ class LifecycleController(BaseController):
             "/consent-requests/{request_id}/authenticate", self.authenticate, dependencies=auth,
             responses={200: {"model": AuthenticateResponse}}, methods=["POST"],
         )
-        # The OTP is an alternative to /authenticate, not a step after approval:
-        # the subject proves who they are on the same screen where they grant.
-        self.router.add_api_route(
-            "/consent-requests/{request_id}/otp", self.issue_otp, dependencies=auth,
-            responses={200: {"model": IssueOtpResponse}}, methods=["POST"],
-        )
-        self.router.add_api_route(
-            "/consent-requests/{request_id}/verify-otp", self.verify_otp, dependencies=auth,
-            responses={200: {"model": AuthenticateResponse}}, methods=["POST"],
-        )
-        if _config.otp_debug_enabled:
-            # This hands out the code and defeats the second factor. It exists so the flow can be driven
-            # from a tool that cannot read the service log.
-            _logger.warning(
-                "otp_debug_enabled=true - GET /consent/v1/consent-requests/{id}/otp "
-                "will return the subject's OTP in plaintext. Never enable outside dev.")
-            self.router.add_api_route(
-                "/consent-requests/{request_id}/otp", self.peek_otp, dependencies=auth,
-                methods=["GET"],
-            )
         self.router.add_api_route(
             "/consent-requests/{request_id}/approve", self.approve, dependencies=auth,
             responses={201: {"model": ArtefactResponse}}, methods=["POST"], status_code=201,
@@ -104,49 +82,7 @@ class LifecycleController(BaseController):
         req = await self.lifecycle.get_request(request_id)
         if req is None:
             return JSONResponse(status_code=404, content={"error": "not_found"})
-        resp = ConsentRequestResponse.model_validate(req)
-        # Lives on the policy, not the request — the screen should not have to
-        # fetch the partner separately to know whether to ask for a code.
-        policy = await self.lifecycle.partners.get_policy(req.partner_id)
-        resp.required_auth_method = getattr(policy, "required_auth_method", None)
-        return resp
-
-    async def issue_otp(self, request_id: str):
-        try:
-            req = await self.lifecycle.issue_otp(request_id)
-        except LifecycleError as exc:
-            return _err(exc)
-        return IssueOtpResponse(
-            request_id=req.id, otp_channel=req.otp_channel,
-            otp_expires_at=req.otp_expires_at, otp_provider=req.otp_provider,
-            message="A one-time code was sent to the subject. Nothing is granted "
-                    "until it is entered and the request approved.",
-        )
-
-    async def verify_otp(self, request_id: str, data: VerifyOtpRequest):
-        try:
-            ctx = await self.lifecycle.verify_otp(request_id, data.otp)
-        except LifecycleError as exc:
-            return _err(exc)
-        return AuthenticateResponse(
-            request_id=request_id, auth_context_id=ctx.id,
-            token_validated=ctx.token_validated, auth_method=ctx.auth_method,
-        )
-
-    async def peek_otp(self, request_id: str):
-        """DEV ONLY. Registered only when otp_debug_enabled."""
-        req = await self.lifecycle.get_request(request_id)
-        if req is None:
-            return JSONResponse(status_code=404, content={"error": "not_found"})
-        return {
-            "request_id": req.id,
-            "subject_id_value": req.subject_id_value,
-            "otp": req.otp_debug_code,
-            "otp_expires_at": req.otp_expires_at,
-            "otp_channel": req.otp_channel,
-            "otp_provider": req.otp_provider,
-            "warning": "otp_debug_enabled is on; this defeats the second factor.",
-        }
+        return ConsentRequestResponse.model_validate(req)
 
     async def authenticate(self, request_id: str, data: AuthenticateRequest):
         try:
@@ -160,7 +96,9 @@ class LifecycleController(BaseController):
 
     async def approve(self, request_id: str, data: ApproveRequest):
         try:
-            artefact = await self.lifecycle.approve(request_id, data.granted_scopes)
+            artefact = await self.lifecycle.approve(
+                request_id, granted_scopes=data.granted_scopes, granted_grants=data.grants
+            )
         except LifecycleError as exc:
             return _err(exc)
         return _artefact_response(artefact)

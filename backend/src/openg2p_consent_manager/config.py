@@ -1,7 +1,20 @@
 from openg2p_fastapi_common.config import Settings as BaseSettings
+from pydantic import BaseModel
 from pydantic_settings import SettingsConfigDict
 
 from . import __version__
+
+
+class TrustedReceiptIssuer(BaseModel):
+    """An exchange Consent Manager whose consent tokens this CM accepts
+    (department role). ``presenter``, when set, is the only presenter accepted
+    on its tokens. ``status_url`` is a template with ``{jti}``; empty derives
+    it from ``jwks_url`` (``<base>/consent/v1/receipts/{jti}/status``)."""
+
+    issuer: str
+    jwks_url: str
+    presenter: str = ""
+    status_url: str = ""
 
 
 class Settings(BaseSettings):
@@ -55,25 +68,15 @@ class Settings(BaseSettings):
     # is signing with the public bundled demo key (must be replaced for production).
     cm_signing_is_demo: bool = False
 
-    # NOTE: the data controller / module is a per-partner attribute
-    # (Partner.controller_id), set at onboarding — one shared CM serves many
-    # modules. A consent object's data_controller is validated against the
-    # onboarded partner's controller_id, so there is no single global controller.
+    # NOTE: the data controller / module is a per-binding attribute
+    # (Partner.controller_id) — one shared CM serves many modules, and one
+    # partner may be bound to several controllers (one binding + policy each).
+    # /validate selects the consent's grant for the calling controller and
+    # evaluates it against that (audience, controller) binding's policy.
 
     # Replay window for embedded consent objects (seconds). issued_at must be
     # within now ± this skew.
     replay_freshness_window_sec: int = 300
-
-    # ── Subject-granted consent in the hot path (gap B8) ────────────────────
-    # Without this an approved consent authorises nothing: /validate matches
-    # artefacts only by object_jti, and an originated artefact has none. When
-    # enabled, an ACTIVE originated artefact for the same (partner, subject)
-    # narrows the decision to what the subject actually granted, and links the
-    # fetch to the subject's auth context.
-    subject_consent_enabled: bool = True
-    # Strict mode: deny when the subject has granted nothing. Off by default so
-    # the partner-signed path keeps behaving exactly as before.
-    subject_consent_required: bool = False
 
     # ── OIDC (origination flow ID-token validation) ─────────────────────────
     # If oidc_jwks_url is set, ID tokens are signature-verified against the IdP
@@ -153,6 +156,11 @@ class Settings(BaseSettings):
     # When awe_enabled is false (default), a widening policy activates immediately
     # (no approval gate) — legacy behaviour.
     awe_enabled: bool = False
+    # Whether the FIRST policy of a new binding (a grant from nothing) needs
+    # approval. On by default: with AWE on, a new binding denies everything until
+    # its first policy is approved. Set false to let the first policy go active
+    # immediately and gate only later widenings.
+    awe_gate_first_policy: bool = True
     # Base URL of the environment's AWE, reachable from CM pods (e.g.
     # https://awe.<baseDomain>). No trailing slash needed.
     awe_base_url: str = ""
@@ -161,9 +169,15 @@ class Settings(BaseSettings):
     # policy changes. Registered in AWE out-of-band. NB: distinct from CM's own
     # data-share policy — this is the *approval* policy key.
     awe_policy_change_policy_key: str = "consent-manager.policy_change.v1"
-    # CM→AWE service auth: Keycloak client-credentials. The fetched bearer is
-    # sent on POST /v1/awe/requests. If awe_static_token is set it is used
-    # verbatim instead (dev/testing).
+    # CM→AWE auth for POST /v1/awe/requests. By default CM forwards the acting
+    # admin's own bearer (as the registry does): it carries the issuer users log
+    # in with, which is the one AWE trusts, and makes the admin the requester.
+    # Without a caller bearer (auth disabled, automation without a token) CM
+    # falls back to a service token: awe_static_token if set, else a Keycloak
+    # client-credentials grant from awe_token_url. That token's `iss` must be an
+    # issuer AWE accepts — use the EXTERNAL Keycloak URL when AWE validates the
+    # external issuer (the commons default).
+    awe_forward_caller_token: bool = True
     awe_token_url: str = ""  # Keycloak token endpoint
     awe_client_id: str = ""
     awe_client_secret: str = ""
@@ -173,77 +187,150 @@ class Settings(BaseSettings):
     # HMAC on inbound webhooks. `callback_secret_id` is passed on every request.
     awe_callback_secret_id: str = ""
     awe_callback_hmac_secret: str = ""
-    # Public URL AWE should POST terminal webhooks back to. Must resolve to
-    # CM's /consent/v1/awe/webhooks/decision endpoint.
+    # URL AWE should POST terminal webhooks back to, reachable FROM the AWE pod
+    # (in-cluster: http://<staff-api-service>/consent/v1/awe/webhooks/decision).
+    # Must resolve to the STAFF api, which serves the webhook route.
     awe_callback_url: str = ""
     # Reject webhooks whose signed timestamp is more than this far from now.
     awe_webhook_max_skew_sec: int = 300
+    # The approver inbox lists open AND claimed tasks. AWE filters on one status
+    # per call, so CM fetches up to this many of each and merges them.
+    awe_inbox_fetch_limit: int = 100
 
-    # ── OTP (the subject's authentication on the consent screen) ───────────
+    # ── Agri Stack exchange (G2P-5719) — all off by default ─────────────────
+    # Consent tokens (receipt_* settings): short-lived JWSs, one per registry
+    # and query — not the Kantara consent receipt.
+    # Exchange role: issue signed consent tokens on /validate when the caller
+    # sends issue_receipts=true. Needs an issuer ID and the callers (their
+    # partner_id / sender_id) allowed to request and present tokens. Tokens
+    # are signed with the CM signing key above (same kid/alg, same JWKS).
+    receipt_issuer: str = ""  # e.g. agri-stack-exchange-cm
+    receipt_presenters: list[str] = []  # e.g. ["agri-composite"]
+    receipt_ttl_seconds: int = 900
+    # Department role: exchange CMs whose consent tokens /validate accepts.
+    # Empty → tokens are denied (receipt_issuer_not_trusted); nothing else changes.
+    trusted_receipt_issuers: list[TrustedReceiptIssuer] = []
+    # Check each consent token's status at its issuer: always | never.
+    receipt_status_check: str = "always"
+    receipt_status_cache_ttl_seconds: int = 10
+    receipt_jwks_cache_ttl_seconds: int = 300
+    # Minimum interval between JWKS refetches for one issuer on an unknown kid.
+    receipt_jwks_refresh_cooldown_seconds: int = 10
+    receipt_fetch_timeout_seconds: float = 3.0
+
+    # ── Partner portal: partner users (consent scenario 1) — off by default ──
+    # Partner users log in to the Keycloak `partner` realm (not the staff realm)
+    # and carry a `partner_id` claim (the partner's audience, e.g. bank-a).
+    # Empty issuer → the partner-portal API answers 404. Tokens are always
+    # signature-verified against the realm's JWKS (empty JWKS URL → derived
+    # from the issuer), independent of auth_enabled (which is for staff).
+    partner_auth_issuer: str = ""  # e.g. https://keycloak.../realms/partner
+    partner_auth_jwks_url: str = ""
+    partner_auth_audience: str = ""  # optional; empty disables the audience check
+    partner_auth_partner_claim: str = "partner_id"
+    # A partner user needs at least one of these realm/client roles.
+    partner_auth_roles: list[str] = ["PARTNER_OPERATOR", "PARTNER_ADMIN"]
+
+    # ── Consent evidence (signed forms) — S3-compatible object storage ──────
+    # Garage in OpenG2P commons. Empty endpoint → uploads/downloads answer 503.
+    evidence_s3_endpoint: str = ""  # e.g. http://commons-garage:3900
+    evidence_s3_access_key: str = ""
+    evidence_s3_secret_key: str = ""
+    evidence_s3_bucket: str = "consent-evidence"  # created if missing
+    evidence_s3_region: str = "garage"
+    evidence_max_bytes: int = 10 * 1024 * 1024
+    evidence_allowed_types: list[str] = ["application/pdf", "image/jpeg", "image/png"]
+    evidence_max_files_per_request: int = 20
+    # Other identifiers of the subject that an assisted request must carry besides
+    # its subject ID (e.g. ["FARMER_ID"] in Agri Stack: the consent is about the
+    # person, keyed by the national ID; the Farmer ID names the farmer). Staff
+    # confirm them in the registry before approving. Empty: none required (a
+    # request may still carry some).
+    subject_required_identifiers: list[str] = []
+    # Where a partner checks the CM's signature on its downloaded consent record
+    # (the public JWKS of the CM partner API), named in the record's README.
+    consent_record_jwks_url: str = ""
+
+    # ── OTP consent: partner raises a request, the CM sends the subject a code,
+    # the partner submits it and the consent is granted (partner portal API) ──
+    otp_provider: str = "fayda"  # fayda | internal (neither delivers the code yet)
     otp_length: int = 6
     otp_ttl_sec: int = 300
-    otp_max_attempts: int = 3
-    # Mixed into the OTP hash so a stolen database row cannot be brute-forced
-    # against a 6-digit space offline. Set this per environment.
-    otp_salt: str = "change-me-per-environment"
-    # DEV ONLY. Exposes GET /consent/v1/consent-requests/{id}/otp. There is no
-    # SMS or email gateway in this stack, so the default sender logs the code;
-    # this endpoint reports the OTP state alongside it.
-    otp_debug_enabled: bool = False
-
-    # Which OTP backend to use. "fayda" applies Fayda's rules in-process via
-    # utils/fayda_otp; "internal" is the same without the Fayda framing.
-    # Switching is config only - nothing above services/otp_provider.py changes,
-    # which is also how a real Fayda deployment would plug in.
-    otp_provider: str = "fayda"
-    # ── OTP publishing (S3 / MinIO drop box) ──────────────────────
-    # Mirrors the OAN Gen 1 / A2C arrangement: each issued OTP is written to a
-    # bucket under otp/ so a tester can read it without an SMS gateway. DEV
-    # ONLY - anything that can read the bucket reads a live OTP beside the
-    # individual it belongs to. Off by default; see services/otp_publisher.py.
+    otp_max_attempts: int = 3  # wrong codes per issued code
+    # Budgets that a resend cannot reset:
+    otp_resend_cooldown_sec: int = 60  # between two codes for one request
+    otp_max_sends_per_request: int = 3  # the first code + 2 resends
+    otp_max_failures_per_request: int = 6  # wrong codes over all its codes; then cancelled
+    # Codes sent to one subject (any partner) within the window.
+    otp_subject_window_sec: int = 3600
+    otp_max_sends_per_subject: int = 10
+    # Mixed into the stored hash so a leaked row cannot be brute-forced offline.
+    # REQUIRED: no default, so no environment shares a public value. Without it
+    # no code is issued (503).
+    otp_salt: str = ""
+    otp_channel: str = "PHONE"
+    # TEST HARNESS (no SMS gateway yet): write each live code to the service
+    # log. Off by default; never on where real subjects exist. With neither
+    # this nor otp_publish_enabled there is no way to deliver a code, so none
+    # is issued (503).
+    otp_log_codes: bool = False
+    # TEST HARNESS (no SMS gateway yet): each issued OTP is also written as a
+    # JSON object to an S3/MinIO bucket under otp/, as in OAN Gen 1 / A2C, so a
+    # tester or partner sandbox can read it. Off by default; never on where
+    # real subjects exist - anything that can read the bucket reads live OTPs.
     otp_publish_enabled: bool = False
     otp_publish_bucket: str = "a2c-webhook"
     otp_publish_prefix: str = "otp/"
-    otp_publish_region: str = "ap-south-1"
-    # Set to point at MinIO or any S3-compatible store; empty resolves AWS.
-    otp_publish_endpoint_url: str = ""
+    otp_publish_region: str = "us-east-1"
+    otp_publish_endpoint_url: str = ""  # e.g. http://minio:9000; empty = AWS
     otp_publish_access_key: str = ""
     otp_publish_secret_key: str = ""
+    otp_publish_id_type: str = "FIN"
 
-    # ── Fayda (OAN mock, g2p_ati_consent_mgt/utils/mock_fayda_otp_api.py) ───
-    # Base URL with no path: the endpoints are /requestData and /getDataAuth.
-    fayda_base_url: str = ""
-    fayda_client_id: str = "demo-client"
-    fayda_client_secret: str = "demo-secret"
-    fayda_version: str = "1.0"
-    # env and domain_uri must match the server's own MOCK_FAYDA_ENV and
-    # MOCK_FAYDA_DOMAIN_URI exactly, or it answers 400 before anything else.
-    fayda_env: str = "prod"
-    fayda_domain_uri: str = "fayda.et"
-    fayda_identifier_type: str = "FIN"
-    fayda_otp_channel: str = "PHONE"
-    # Only used to render the masked-mobile line in the log, so an
-    # operator can see WHERE a real Fayda would have sent the code.
-    fayda_demo_phone: str = "0911000055"
-    fayda_timeout: float = 20.0
-    # Fayda keys on the individual's Fayda/FIN number, not a Keycloak username,
-    # so a demo subject has to be mapped onto one.
-    # JSON: {"staff": "6140798523698702"}
-    fayda_individual_id_map: str = ""
-
-    @property
-    def fayda_individual_ids(self) -> dict:
-        import json
-        import logging
-
-        raw = (self.fayda_individual_id_map or "").strip()
-        if not raw:
-            return {}
-        try:
-            parsed = json.loads(raw)
-        except Exception as exc:  # noqa: BLE001
-            logging.getLogger(self.logging_default_logger_name).error(
-                "fayda_individual_id_map is not valid JSON (%s); subjects will "
-                "be passed through unmapped", exc)
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
+    # ── Subject authentication with national ID (consent scenario 1, phase 2) ──
+    # The subject (e.g. a farmer at the bank) proves who they are through an
+    # OIDC provider such as eSignet (OTP, biometrics) during an assisted request:
+    # the partner portal opens the provider's login, the provider redirects to
+    # the callback below, and the CM checks the result. When enabled it is
+    # MANDATORY: an assisted request cannot be submitted until its subject has
+    # authenticated (and the signed form is still required).
+    subject_auth_enabled: bool = False
+    subject_auth_provider_name: str = "National ID (eSignet)"
+    # Discovery document (issuer, endpoints, JWKS). Each value can be overridden
+    # below; an override wins.
+    subject_auth_discovery_url: str = ""  # e.g. https://esignet.<domain>/.well-known/openid-configuration
+    subject_auth_issuer: str = ""
+    subject_auth_authorize_url: str = ""
+    subject_auth_token_url: str = ""
+    subject_auth_userinfo_url: str = ""
+    subject_auth_jwks_url: str = ""
+    # The CM's OIDC client at the provider; it authenticates with private_key_jwt.
+    subject_auth_client_id: str = ""
+    # Client private key (RSA PEM): a file (a mounted Secret, read when first
+    # needed, so a Secret created after the pod started is picked up) or inline.
+    subject_auth_private_key_path: str = ""
+    subject_auth_private_key_pem: str = ""
+    subject_auth_key_kid: str = ""  # empty → the client ID (as registered)
+    # Where the provider sends the browser back: the partner portal's host routes
+    # /consent/v1/partner-portal/ to this API, e.g.
+    # https://consent-partner-portal.<domain>/consent/v1/partner-portal/subject-auth/callback
+    subject_auth_redirect_uri: str = ""
+    subject_auth_scope: str = "openid profile"
+    subject_auth_acr_values: str = "mosip:idp:acr:generated-code"
+    # Claims asked for; individual_id (the national ID) is what the subject is
+    # matched on — eSignet's `sub` is pairwise, so it can never equal the ID.
+    subject_auth_claims: dict = {
+        "userinfo": {"individual_id": {"essential": True}, "name": {"essential": True}},
+        "id_token": {},
+    }
+    subject_auth_subject_claim: str = "individual_id"
+    subject_auth_ui_locales: str = ""
+    # Subject ID types the provider authenticates (the national ID); a request
+    # for another type cannot be authenticated, so it cannot be submitted.
+    subject_auth_id_types: list[str] = ["FAYDA_FAN", "NATIONAL_ID", "national_id"]
+    # Claims kept with the authentication record (besides acr/amr/auth_time);
+    # the rest of the provider's answer is not stored.
+    subject_auth_stored_claims: list[str] = ["name"]
+    # How long a started login may take (the state's lifetime).
+    subject_auth_session_ttl_seconds: int = 300
+    subject_auth_http_timeout_seconds: float = 10.0

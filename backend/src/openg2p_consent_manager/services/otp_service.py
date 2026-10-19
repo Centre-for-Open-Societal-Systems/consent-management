@@ -1,18 +1,12 @@
-"""One-time codes for the consent screen.
+"""One-time codes for partner-raised consent requests.
 
-When a partner's policy sets ``required_auth_method = "otp"`` the subject must
-prove, where they grant, that they hold the registered identity: ``approve``
-refuses an AuthContext whose ``auth_method`` is anything else.
-
-The mechanism itself lives in ``otp_provider``, chosen by config:
-
-    otp_provider = fayda       Fayda's rules, in-process (default)
-    otp_provider = internal    the same without the Fayda framing
-
-This class is the seam the rest of the service talks to, so swapping backends
-never reaches the lifecycle service or the controller.
+The mechanism lives in ``otp_provider``, chosen by config (``otp_provider``:
+``fayda`` or ``internal``). This class is the seam the rest of the service
+talks to, so swapping backends never reaches the consent flow.
 """
 import logging
+from datetime import datetime, timezone
+from typing import Optional
 
 from openg2p_fastapi_common.service import BaseService
 
@@ -29,28 +23,45 @@ class OtpService(BaseService):
     def __init__(self, name="", **kwargs):
         super().__init__(name if name else "OtpService", **kwargs)
         self._provider: OtpProvider = build_otp_provider()
+        _logger.info("OTP provider: %s", self.provider_name)
+        problem = self.readiness_error()
+        if problem:
+            _logger.warning("OTP consent requests will be refused: %s", problem)
 
     @property
     def provider_name(self) -> str:
         return getattr(self._provider, "name", "unknown")
 
     def set_provider(self, provider: OtpProvider) -> None:
-        """Override the configured backend. For tests and for a deployment that
-        supplies its own IDA client at startup."""
+        """Override the configured backend (tests, or a real Fayda / SMS client)."""
         self._provider = provider
-        _logger.info("OTP provider overridden to '%s'", self.provider_name)
+
+    def readiness_error(self) -> Optional[str]:
+        """Why no code may be issued, or None. A code needs a configured salt
+        and some way to reach the subject (a delivering provider, or one of
+        the test harnesses)."""
+        if not _config.otp_salt:
+            return "otp_salt is not configured"
+        if not (
+            getattr(self._provider, "delivers", False)
+            or _config.otp_log_codes
+            or _config.otp_publish_enabled
+        ):
+            return "no OTP delivery channel is configured"
+        return None
 
     async def issue(self, request, destination: str) -> None:
         """Ask the provider for a code and stamp the request with its state."""
+        problem = self.readiness_error()
+        if problem:
+            _logger.error("OTP not issued for consent request %s: %s", request.id, problem)
+            raise OtpError(503, "otp_unavailable", problem)
         await self._provider.issue(request, destination)
+        request.otp_send_count = (request.otp_send_count or 0) + 1
+        request.otp_last_sent_at = datetime.now(timezone.utc)
 
     async def verify(self, request, code: str) -> None:
         """Raise OtpError unless the code is the live one for this request.
-
         Mutates ``otp_attempts`` on failure and sets ``otp_verified_at`` on
-        success; the caller commits.
-        """
+        success; the caller commits."""
         await self._provider.verify(request, code)
-
-    def attempts_exhausted(self, request) -> bool:
-        return (request.otp_attempts or 0) >= _config.otp_max_attempts

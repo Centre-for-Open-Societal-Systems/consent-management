@@ -157,3 +157,130 @@ async def get_current_subject(
         "subject_id_type": identity.subject_id_type,
         "subject_id_value": identity.subject_id_value,
     }
+
+
+def require_any_role(*roles: str):
+    """Dependency factory — gate an endpoint on any one of several roles."""
+
+    async def _checker(
+        identity: CallerIdentity = Depends(current_identity),
+    ) -> CallerIdentity:
+        if not _config.auth_enabled:
+            return identity
+        if not set(roles) & set(identity.roles):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"One of roles {sorted(roles)} required",
+            )
+        return identity
+
+    return _checker
+
+
+def staff_username(identity: CallerIdentity) -> str:
+    """The staff user's display name for audit fields (verified_by)."""
+    return (identity.raw_claims or {}).get("preferred_username") or identity.subject or "unknown"
+
+
+# ── Partner realm (partner portal users) ─────────────────────────────────────
+# Partner users log in to a separate Keycloak realm. Their tokens are verified
+# with the partner_auth_* settings, never with the staff realm's.
+
+_partner_jwk_client: Optional[jwt.PyJWKClient] = None
+
+
+@dataclass
+class PartnerUser:
+    username: str
+    name: Optional[str]
+    partner_id: str  # the partner's audience, e.g. bank-a
+    roles: List[str] = field(default_factory=list)
+    raw_claims: dict = field(default_factory=dict)
+
+
+def _get_partner_jwk_client() -> jwt.PyJWKClient:
+    global _partner_jwk_client
+    if _partner_jwk_client is None:
+        url = _config.partner_auth_jwks_url or (
+            _config.partner_auth_issuer.rstrip("/") + "/protocol/openid-connect/certs"
+        )
+        _partner_jwk_client = jwt.PyJWKClient(url)
+    return _partner_jwk_client
+
+
+def _verify_partner_token(token: str) -> dict:
+    try:
+        signing_key = _get_partner_jwk_client().get_signing_key_from_jwt(token)
+    except jwt.PyJWKClientConnectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Could not reach the partner realm JWKS: {exc}",
+        )
+    except jwt.PyJWTError as exc:
+        # Malformed token or no key for its kid.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid bearer token: {exc}"
+        )
+    except Exception as exc:  # JWKS unreachable
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Could not reach the partner realm JWKS: {exc}",
+        )
+    try:
+        return jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=_config.auth_algorithms,
+            issuer=_config.partner_auth_issuer,
+            audience=_config.partner_auth_audience or None,
+            options={"verify_aud": bool(_config.partner_auth_audience), "require": ["exp"]},
+        )
+    except jwt.PyJWTError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid or expired token: {exc}",
+        )
+
+
+def _partner_claim(claims: dict) -> Optional[str]:
+    value = claims.get(_config.partner_auth_partner_claim)
+    # A multivalued user attribute maps to a list; accept exactly one value.
+    if isinstance(value, list):
+        value = value[0] if len(value) == 1 else None
+    return value if isinstance(value, str) and value.strip() else None
+
+
+async def current_partner_user(
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> PartnerUser:
+    """Require a valid partner-realm bearer token with a ``partner_id`` claim and
+    a partner role. The partner portal API is disabled (404) while the partner
+    realm issuer is not configured."""
+    if not _config.partner_auth_issuer:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token"
+        )
+    claims = _verify_partner_token(authorization[len("Bearer ") :])
+    username = claims.get("preferred_username") or claims.get("sub")
+    if not username:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token missing subject"
+        )
+    partner_id = _partner_claim(claims)
+    if partner_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Token has no '{_config.partner_auth_partner_claim}' claim",
+        )
+    roles = _extract_roles(claims)
+    if not set(roles) & set(_config.partner_auth_roles):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"One of roles {sorted(_config.partner_auth_roles)} required",
+        )
+    return PartnerUser(
+        username=username, name=claims.get("name") or None, partner_id=partner_id.strip(),
+        roles=roles, raw_claims=claims,
+    )

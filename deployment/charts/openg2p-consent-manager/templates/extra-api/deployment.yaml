@@ -57,10 +57,21 @@ spec:
           {{- end }}
           env:
             {{- include "consentManagerApi.envVars" . | nindent 12 }}
+            {{- with (include "consentManager.exchangeEnv" $ | trim) }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- if eq (toString .Values.apiAudience) "staff" }}
+            {{- with (include "consentManager.partnerPortalEnv" $ | trim) }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- end }}
             - name: CONSENT_MANAGER_API_AUDIENCE
               value: {{ .Values.apiAudience | quote }}
             - name: CONSENT_MANAGER_AUTH_ENABLED
               value: {{ tpl (.Values.authEnabled | toString) $ | quote }}
+            # AWE decision webhook target: always the STAFF api's Service.
+            - name: CONSENT_MANAGER_AWE_CALLBACK_URL
+              value: {{ include "consentManager.aweCallbackUrl" $ | quote }}
             {{- if .Values.signingKeyMounted }}
             - name: CONSENT_MANAGER_CM_SIGNING_P12_PATH
               value: {{ .Values.signingKey.mountPath }}/{{ .Values.signingKey.secretKey }}

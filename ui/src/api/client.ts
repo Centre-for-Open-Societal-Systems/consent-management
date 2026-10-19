@@ -8,14 +8,18 @@ import type {
   AweTask,
   ConsentRequest,
   DecisionLog,
+  Grant,
   PagedTasks,
   Paginated,
   Partner,
   PartnerCreate,
   PartnerPolicy,
   PartnerUpdate,
+  PolicyMeta,
   PolicyUpsert,
+  OffsetPage,
   RevokeResponse,
+  VerificationRequest,
 } from "./types";
 
 export class ApiError extends Error {
@@ -43,18 +47,50 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const text = await res.text();
   const body = text ? JSON.parse(text) : undefined;
   if (!res.ok) {
-    const detail = body?.detail ?? body?.error ?? body?.message ?? res.statusText;
+    // The platform's validation errors arrive as 400 {"errors": [{code, message}]}.
+    const listed = Array.isArray(body?.errors)
+      ? body.errors.map((e: { message?: string }) => e.message).filter(Boolean).join("; ")
+      : undefined;
+    const detail = listed || (body?.detail ?? body?.error ?? body?.message ?? res.statusText);
     const reason = body?.reason_code ?? body?.reason;
     throw new ApiError(res.status, typeof detail === "string" ? detail : JSON.stringify(detail), reason);
   }
   return body as T;
 }
 
+// File download (evidence): the raw body as a Blob, with the bearer token.
+async function requestBlob(path: string): Promise<Blob> {
+  await refreshToken();
+  const base = getConfig().apiBaseUrl.replace(/\/$/, "");
+  const res = await fetch(`${base}${path}`, { headers: { Authorization: `Bearer ${getToken()}` } });
+  if (!res.ok) {
+    const text = await res.text();
+    let detail: string = res.statusText;
+    try {
+      const body = JSON.parse(text);
+      detail = body?.detail ?? body?.error ?? body?.message ?? detail;
+    } catch {
+      /* not JSON */
+    }
+    throw new ApiError(res.status, typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+  return res.blob();
+}
+
 const V1 = "/consent/v1";
 
 export const api = {
+  // Allowed values for the binding/policy forms (staff).
+  getMeta: () => request<PolicyMeta>(`${V1}/meta`),
+
   // ── Partners (admin) ───────────────────────────────────────────────
-  listPartners: () => request<Partner[]>(`${V1}/partners`),
+  // `audience` narrows to one partner's bindings (one per controller).
+  listPartners: (params: { audience?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.audience) q.set("audience", params.audience);
+    const qs = q.toString();
+    return request<Partner[]>(`${V1}/partners${qs ? `?${qs}` : ""}`);
+  },
   getPartner: (id: string) => request<Partner>(`${V1}/partners/${id}`),
   createPartner: (data: PartnerCreate) =>
     request<Partner>(`${V1}/partners`, { method: "POST", body: JSON.stringify(data) }),
@@ -67,6 +103,10 @@ export const api = {
   listPolicies: (id: string) => request<PartnerPolicy[]>(`${V1}/partners/${id}/policies`),
   putPolicy: (id: string, data: PolicyUpsert) =>
     request<PartnerPolicy>(`${V1}/partners/${id}/policy`, { method: "PUT", body: JSON.stringify(data) }),
+  // Copy a failed / stale / rejected version into a new version and save it
+  // again (re-evaluated against the current active policy).
+  resubmitPolicy: (id: string, version: number) =>
+    request<PartnerPolicy>(`${V1}/partners/${id}/policies/${version}/resubmit`, { method: "POST" }),
 
   // ── Decisions (admin status/audit view) ────────────────────────────
   listDecisions: (params: { partner_id?: string; decision?: string; limit?: number } = {}) => {
@@ -78,9 +118,10 @@ export const api = {
   },
 
   // ── AWE approvals (approver inbox — proxied to AWE with the approver JWT) ──
+  // status "actionable" (default) = open or claimed tasks.
   listMyTasks: (params: { status?: string; page?: number; page_size?: number } = {}) => {
     const q = new URLSearchParams();
-    q.set("status", params.status ?? "open");
+    q.set("status", params.status ?? "actionable");
     q.set("page", String(params.page ?? 1));
     q.set("page_size", String(params.page_size ?? 25));
     return request<PagedTasks>(`${V1}/awe/tasks?${q.toString()}`);
@@ -108,28 +149,6 @@ export const api = {
 
   // ── Consent request (originate / redirect flow) ────────────────────
   getConsentRequest: (id: string) => request<ConsentRequest>(`${V1}/consent-requests/${id}`),
-
-  // What is being ASKED of me, as opposed to /my/consents which is what I have
-  // already agreed to. Scoped to the caller by the token, so it takes no
-  // subject argument. Defaults to pending server-side.
-  // "all" means every status; absent would mean pending, which is the route's
-  // own default. These return the ENVELOPE, not just the items: a subject can
-  // have hundreds of rows, so `total` is the only honest source for a count and
-  // for saying how much of the history is on screen.
-  myConsentRequestsPage: (status = "pending", size = 100) =>
-    request<Paginated<ConsentRequest>>(
-      `${V1}/my/consent-requests?status=${encodeURIComponent(status || "all")}&size=${size}`
-    ),
-
-  // view "consents" drops the access records each partner fetch writes under
-  // a decision; "all" is every row.
-  myConsentsPage: (status?: string, size = 100, view: "all" | "consents" = "all") =>
-    request<Paginated<Artefact>>(
-      `${V1}/my/consents?size=${size}&view=${view}${
-        status ? `&status=${encodeURIComponent(status)}` : ""
-      }`
-    ),
-  myConsentActivity: (id: string) => request<Artefact[]>(`${V1}/my/consents/${id}/activity`),
   // The subject authenticates by presenting their IdP id_token, then approves
   // with the scopes they agree to share.
   authenticateConsentRequest: (id: string, idToken: string) =>
@@ -137,26 +156,44 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ id_token: idToken }),
     }),
-  // …or, when the partner's policy requires it, by entering a one-time code.
-  // Both paths end in the same AuthContext; approve refuses without one.
-  issueConsentOtp: (id: string) =>
-    request<{ otp_channel: string | null; otp_expires_at: string | null }>(
-      `${V1}/consent-requests/${id}/otp`,
-      { method: "POST" },
-    ),
-  verifyConsentOtp: (id: string, otp: string) =>
-    request<{ auth_method: string | null }>(`${V1}/consent-requests/${id}/verify-otp`, {
-      method: "POST",
-      body: JSON.stringify({ otp }),
-    }),
   approveConsentRequest: (id: string, grantedScopes: string[]) =>
     request<Artefact>(`${V1}/consent-requests/${id}/approve`, {
       method: "POST",
       body: JSON.stringify({ granted_scopes: grantedScopes }),
     }),
+  // For a request with grants: approve each controller's scopes; a controller
+  // left out is declined.
+  approveConsentRequestGrants: (id: string, grants: Grant[]) =>
+    request<Artefact>(`${V1}/consent-requests/${id}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ grants }),
+    }),
   denyConsentRequest: (id: string, reason?: string) =>
     request<ConsentRequest>(`${V1}/consent-requests/${id}/deny`, {
       method: "POST",
       body: JSON.stringify({ reason: reason ?? null }),
+    }),
+
+  // ── Consent verifications (assisted consent; approver acts, admin reads) ──
+  listVerifications: (params: { status?: string; limit?: number; offset?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.status) q.set("status", params.status);
+    q.set("limit", String(params.limit ?? 50));
+    q.set("offset", String(params.offset ?? 0));
+    return request<OffsetPage<VerificationRequest>>(`${V1}/verifications?${q.toString()}`);
+  },
+  getVerification: (id: string) =>
+    request<VerificationRequest>(`${V1}/verifications/${encodeURIComponent(id)}`),
+  getVerificationEvidence: (id: string, evidenceId: string) =>
+    requestBlob(`${V1}/verifications/${encodeURIComponent(id)}/evidence/${encodeURIComponent(evidenceId)}`),
+  approveVerification: (id: string, note?: string, identifiersChecked = false) =>
+    request<VerificationRequest>(`${V1}/verifications/${encodeURIComponent(id)}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ ...(note ? { note } : {}), identifiers_checked: identifiersChecked }),
+    }),
+  rejectVerification: (id: string, note: string) =>
+    request<VerificationRequest>(`${V1}/verifications/${encodeURIComponent(id)}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ note }),
     }),
 };

@@ -1,5 +1,8 @@
 global:
   namespace: "" # empty => auto-pick install namespace (.Release.Namespace)
+  # Domain every hostname sits under: <service>.<baseDomain>. Inside
+  # commons-services this is commons' own global.baseDomain. Rendered with tpl.
+  baseDomain: '{{ .Values.global.namespace | default .Release.Namespace }}.openg2p.org'
 
   # ── Database (shared commons Postgres) ──────────────────────────────────
   postgresqlHost: commons-postgresql
@@ -11,16 +14,27 @@ global:
 
   # ── Hostname / routing (one per API audience) ───────────────────────────
   # staff console + admin API:
-  consentManagerHostname: 'consent-manager.{{ .Values.global.namespace | default .Release.Namespace }}.openg2p.org'
+  consentManagerHostname: 'consent-manager.{{ tpl .Values.global.baseDomain $ }}'
   # partner-facing PDP (/validate, receipts, JWKS) — verified via PM keys:
-  consentManagerPartnerHostname: 'consent-manager-partner.{{ .Values.global.namespace | default .Release.Namespace }}.openg2p.org'
+  consentManagerPartnerHostname: 'consent-manager-partner.{{ tpl .Values.global.baseDomain $ }}'
   # beneficiary self-service (/my/*, origination) — scaffolded, disabled:
-  consentManagerBeneHostname: 'consent-manager-bene.{{ .Values.global.namespace | default .Release.Namespace }}.openg2p.org'
+  consentManagerBeneHostname: 'consent-manager-bene.{{ tpl .Values.global.baseDomain $ }}'
+  # partner portal SPA (assisted consent collection) — used only when
+  # partnerPortal.enabled. Also the redirect/web origin of its Keycloak client.
+  consentPartnerPortalHostname: 'consent-partner-portal.{{ tpl .Values.global.baseDomain $ }}'
+  # Keycloak realm of partner users (partner portal). Used only when
+  # partnerPortal.enabled; the partner-keycloak-init block creates it.
+  consentPartnerRealm: partner
 
   # ── Keycloak (caller auth) ──────────────────────────────────────────────
-  keycloakBaseUrl: 'https://keycloak.{{ .Values.global.namespace | default .Release.Namespace }}.openg2p.org'
+  keycloakBaseUrl: 'https://keycloak.{{ tpl .Values.global.baseDomain $ }}'
   keycloakRealm: staff
   keycloakIssuerUrl: '{{ tpl .Values.global.keycloakBaseUrl $ }}/realms/{{ tpl .Values.global.keycloakRealm $ }}'
+  # The issuer users' tokens carry (public Keycloak URL). Empty => same as
+  # keycloakIssuerUrl. Umbrella charts that point keycloakIssuerUrl at the
+  # INTERNAL Keycloak (commons) also define this as the external one; the CM→AWE
+  # service-token fallback is fetched from it so its `iss` matches what AWE trusts.
+  keycloakExternalIssuerUrl: ''
   consentManagerAuthEnabled: true
   consentManagerAuthClientId: consent-manager
   consentManagerAdminRole: CONSENT_MANAGER_ADMIN
@@ -49,19 +63,53 @@ global:
   # OPTIONAL add-on (OFF by default). When ON, CM gates policy WIDENING behind the
   # shared AWE: a widening creates a `pending` policy version that only activates
   # once approvers sign off. CM is fully usable with this OFF — policy changes just
-  # take effect immediately (still admin-only). Turning it ON requires AWE-side
-  # setup that is NOT auto-provisioned: (1) an AWE approval POLICY registered for
-  # `awePolicyChangePolicyKey` (create + activate via AWE admin — see the
-  # approval-workflow-integration doc), (2) approver users/roles, (3) the
-  # consent-manager client trusted by AWE's issuer. CM auto-handles only the
-  # callback secret (awe-callback-seed Job) + the callback URL.
+  # take effect immediately (still admin-only).
+  #
+  # Turning it ON (aweEnabled: true) is all that is needed against the commons
+  # AWE: the awe-callback-seed Job registers CM's callback secret AND seeds the
+  # approval policy `awePolicyChangePolicyKey` (one stage, approvers = users
+  # holding the consent-manager client role CONSENT_MANAGER_APPROVER) into the
+  # shared AWE database; the callback URL and token URL are derived below. Grant
+  # CONSENT_MANAGER_APPROVER to the approver users (keycloak-init users[]).
   aweEnabled: false
-  aweHostname: 'awe.{{ .Values.global.namespace | default .Release.Namespace }}.openg2p.org'
+  aweHostname: 'awe.{{ tpl .Values.global.baseDomain $ }}'
   aweBaseUrl: 'https://{{ tpl .Values.global.aweHostname $ }}'
   aweHttpTimeoutSeconds: 30
   # AWE *approval* policy (workflow) key governing data-share policy changes.
   awePolicyChangePolicyKey: consent-manager.policy_change.v1
   aweWebhookMaxSkewSeconds: 300
+  # Gate the FIRST policy of a new binding too (a grant from nothing). With AWE
+  # on, a new binding then denies everything until an approver signs off.
+  aweGateFirstPolicy: true
+  # Forward the acting admin's own bearer to AWE when creating a request (as the
+  # registry does). Off => always use the service token below.
+  aweForwardCallerToken: true
+  # Service-token fallback (no caller bearer): Keycloak token endpoint for the
+  # consent-manager client. Empty => <keycloakExternalIssuerUrl or
+  # keycloakIssuerUrl>/protocol/openid-connect/token.
+  aweTokenUrl: ''
+  # Where AWE POSTs decisions (must reach the STAFF api from the AWE pod).
+  # Empty => http://<staff api service>/consent/v1/awe/webhooks/decision, the
+  # service name derived from consentManagerApi.nameOverride (so it follows a
+  # rename such as commons' `cm-api`).
+  aweCallbackUrl: ''
+  # The AWE approval policy the seed Job creates (if absent) for
+  # awePolicyChangePolicyKey. Existing rows are never overwritten — edits made
+  # in the AWE admin UI survive upgrades. seed: false => manage it in AWE only.
+  aweApprovalPolicy:
+    seed: true
+    name: Consent Manager data-share policy change
+    # all | any-n (modeValue approvals) | quorum | percentage (modeValue %)
+    mode: any-n
+    modeValue: 1
+    slaHours: ''
+    # Approvers: users holding this role. Client role on approverClient, or a
+    # realm role when approverClient is empty.
+    approverRole: '{{ tpl .Values.global.consentManagerApproverRole $ }}'
+    approverClient: '{{ tpl .Values.global.consentManagerAuthClientId $ }}'
+    # Set true in production so the admin who made a change cannot approve it.
+    # Off by default because the first-install `admin` holds both roles.
+    forbidSelfApproval: false
   # Per-caller callback secret: a unique id + a minted HMAC secret. The
   # awe-callback-seed Job inserts the row into AWE's callback_secret table; CM
   # holds the same raw secret to verify inbound webhook signatures.
@@ -77,6 +125,11 @@ global:
   # Helm release hosting the shared AWE — its Service is <aweReleaseName>-awe.
   aweReleaseName: commons-services
 
+  # How long the partner api may serve a policy from its pod-local cache after
+  # it changed (an approval is applied by the staff api; other pods pick it up
+  # within this many seconds).
+  partnerPolicyCacheTtlSeconds: 60
+
   # The data controller / module is a per-partner attribute set at onboarding —
   # one shared CM serves many modules, so there is no global controller setting.
 
@@ -86,6 +139,65 @@ global:
   # it is NOT read from the .p12. Set your own when using your own key, and
   # change it on every key rotation so old/new public keys coexist in the JWKS.
   consentSigningKid: cm-2025-01
+
+  # ── Agri Stack exchange (OFF by default) ────────────────────────────────
+  # Consent tokens (short-lived, one per registry and query; called receipts
+  # in the settings and API) between Consent Managers. Leave everything empty for a
+  # standalone install: nothing is rendered and CM behaves exactly as before.
+  # `role` picks working defaults: exchange (issues tokens to the composite;
+  # with the partner portal, national-ID login on, Farmer ID required, the
+  # composite at agri-composite.<this domain>) or department (trusts the
+  # exchange CM at exchangeDomain). Empty fields below take those defaults.
+  # Without a role, the fields act as set. `enabled` is the older Rancher switch.
+  agriStackExchange:
+    enabled: false
+    role: ''
+    defaultIssuer: agri-stack-exchange-cm
+    defaultPresenter: agri-composite
+    defaultSubjectIdentifiers: [FARMER_ID]
+    # Department role: the exchange's domain; empty = agrix.<parent of this
+    # install's domain>, e.g. agrix.openg2p.org for trial.openg2p.org.
+    exchangeDomain: ''
+    # Exchange role (the `agrix` install): issuer ID stamped as `iss` on the
+    # consent tokens, and the callers (their partner_id / DCI sender_id, e.g.
+    # agri-composite) allowed to request them with issue_receipts=true. A list
+    # or a comma-separated string. Tokens are signed with the signing key
+    # above and verifiable at the partner api's /.well-known/jwks.json.
+    issuer: ''
+    receiptPresenters: []
+    receiptTtlSeconds: 900
+    # Department role (`trial`, `csr`): exchange CMs whose consent tokens /validate
+    # accepts — list of {issuer, jwks_url, presenter, status_url?}; jwks_url is
+    # the exchange CM partner api's /.well-known/jwks.json. The presenter needs
+    # a binding + policy at this CM (audience = presenter) per controller.
+    trustedReceiptIssuers: []
+    # One trusted issuer as plain fields (Rancher); added to the list above
+    # when trustedIssuer.issuer is set.
+    trustedIssuer:
+      issuer: ''
+      jwksUrl: ''
+      presenter: ''
+    # Check each consent token's status at its issuer: always | never.
+    receiptStatusCheck: always
+
+# ── AWE seed Job + callback HMAC Secret (rendered only when global.aweEnabled) ──
+# The Job registers CM's callback secret and seeds the approval policy into the
+# shared AWE database (see global.aweApprovalPolicy). Both run as Helm hooks by
+# default. Where hooks do not run (commons-services, installed via Rancher),
+# null the hook keys (`"helm.sh/hook": null`, ...): the Secret is then a plain
+# resource and the Job a plain Job named per release revision (so an upgrade
+# never patches an immutable Job), removed ttlSecondsAfterFinished after it ends.
+aweSeed:
+  image: jbergknoff/postgresql-client:latest
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 6
+aweCallbackHmacSecret:
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
 
 postgres-init:
   enabled: true
@@ -167,6 +279,56 @@ keycloak-init:
             # pattern. This avoids referencing a PM Keycloak client from CM's
             # keycloak-init (a missing client would fail this init job).
 
+# Partner realm for the partner portal — a second keycloak-init run, installed
+# only when partnerPortal.enabled (Chart.yaml condition). Set `enabled: false`
+# here to skip it while the portal is on (realm managed by hand).
+#
+# keycloak-init (0.0.0-develop.60) creates the realm and the public client. It
+# CANNOT create realm roles, declare user-profile attributes, add custom
+# protocol mappers, enforce PKCE or set user attributes — do these once in the
+# Keycloak admin console (realm `partner`) after the first install:
+#   1. Realm roles → Create role: PARTNER_OPERATOR, then PARTNER_ADMIN.
+#   2. Realm settings → User profile → Create attribute `partner_id`
+#      (who can view/edit: admin only). Keycloak 24+ drops undeclared attributes.
+#   3. Clients → consent-partner-portal → Client scopes →
+#      consent-partner-portal-dedicated → Add mapper → By configuration →
+#      User Attribute: name `partner_id`, user attribute `partner_id`, token
+#      claim name `partner_id`, JSON type String, add to access token ON
+#      (ID token / userinfo ON too).
+#   4. Clients → consent-partner-portal → Advanced → PKCE method S256
+#      (optional: the portal always sends PKCE; this makes it mandatory).
+#   5. Users → Add user per partner employee: set attribute `partner_id` (the
+#      partner's ID in Partner Management, e.g. bank-a), assign PARTNER_OPERATOR
+#      or PARTNER_ADMIN, set a password. For partnerPortal.testUsers use the
+#      passwords in the <release>-partner-test-users Secret.
+partner-keycloak-init:
+  keycloak:
+    url: 'http://commons-keycloak:80'
+    user: 'admin'
+    password: ''
+    existingSecret: 'commons-keycloak'
+    existingSecretKey: 'admin-password'
+  realms:
+    # Must equal global.consentPartnerRealm.
+    partner:
+      # The OpenG2P login page labelled "Partner Portal" (theme in the
+      # keycloak-themes image, as staff-portal / agent-portal for the staff and
+      # agent realms). An image without it falls back to Keycloak's own page.
+      themes:
+        loginTheme: partner-portal
+        adminTheme: partner-portal
+      clients:
+        # PUBLIC browser client for the partner portal SPA (standard flow; the
+        # SPA uses PKCE). Redirects back to the portal host only.
+        - clientId: consent-partner-portal
+          name: OpenG2P Consent Partner Portal
+          publicClient: true
+          standardFlowEnabled: true
+          redirectUris:
+            - 'https://{{ tpl .Values.global.consentPartnerPortalHostname $ }}/*'
+          webOrigins:
+            - 'https://{{ tpl .Values.global.consentPartnerPortalHostname $ }}'
+
 # Admin console SPA (React → nginx), served on the SAME host as the staff API
 # (a single VirtualService routes /consent/ → staff API, / → this UI). Runtime
 # config.json (Keycloak URL/realm/clientId, roles) is injected via a ConfigMap.
@@ -226,6 +388,173 @@ ui:
     periodSeconds: 10
   # Client id of the PUBLIC browser client provisioned in keycloak-init above.
   clientId: consent-manager-ui
+
+# ── Partner portal (OFF by default) ─────────────────────────────────────────
+# SPA for partner users (e.g. bank staff) to collect assisted consent: create a
+# consent request, upload the signed form, submit it for staff verification.
+# Logs in against the Keycloak `partner` realm (see partner-keycloak-init). Off
+# for a standalone install: nothing below is rendered and CM behaves as before.
+# When ON it also:
+#   - sets the staff api's partner-realm token settings (partner portal API
+#     /consent/v1/partner-portal is served by the STAFF api deployment), and
+#   - turns on evidence storage (see `evidence` below).
+partnerPortal:
+  enabled: false
+  nameOverride: partner-portal
+  hostname: '{{ tpl .Values.global.consentPartnerPortalHostname $ }}'
+  # Base URL the SPA calls the partner portal API at. Empty (default) = same
+  # origin: the portal's VirtualService routes /consent/v1/partner-portal/ on
+  # the portal host to the staff api (no CORS needed). Set a full URL only if
+  # that host allows the portal origin (CORS).
+  apiBaseUrl: ''
+  # Optional Agri Stack composite base URL (e.g. https://composite.<domain>);
+  # when set the portal shows the use-case catalogue (GET /composite/v1/use-cases).
+  compositeUrl: ''
+  keycloak:
+    # Public Keycloak URL (browser login + the `iss` of partner tokens).
+    url: '{{ tpl .Values.global.keycloakBaseUrl $ }}'
+    realm: '{{ tpl .Values.global.consentPartnerRealm $ }}'
+    # Must match the client in partner-keycloak-init.
+    clientId: consent-partner-portal
+    # In-cluster Keycloak URL the CM api fetches the partner realm JWKS from.
+    internalUrl: '{{ index .Values "keycloak-init" "keycloak" "url" }}'
+    # Issuer CM accepts on partner tokens, and where it fetches their keys.
+    issuerUrl: '{{ tpl .Values.partnerPortal.keycloak.url $ }}/realms/{{ tpl .Values.partnerPortal.keycloak.realm $ }}'
+    jwksUrl: '{{ tpl .Values.partnerPortal.keycloak.internalUrl $ }}/realms/{{ tpl .Values.partnerPortal.keycloak.realm $ }}/protocol/openid-connect/certs'
+  operatorRole: PARTNER_OPERATOR
+  adminRole: PARTNER_ADMIN
+  # Other identifiers of the subject every assisted request must carry besides
+  # its subject ID, e.g. [FARMER_ID] in Agri Stack (a list, or a comma-separated
+  # string from the Rancher form). Staff confirm them in the registry before
+  # approving.
+  requiredSubjectIdentifiers: []
+  # Named in the consent record a partner downloads, to check the CM's signature
+  # on it: the partner api's public JWKS.
+  consentRecordJwksUrl: 'https://{{ tpl .Values.global.consentManagerPartnerHostname $ }}/api/consent-manager-partner/.well-known/jwks.json'
+  # The subject's national-ID login during an assisted request (consent
+  # scenario 1, phase 2): eSignet, as the registry's beneficiary authentication
+  # for credentials. When on it is MANDATORY: a request cannot be submitted
+  # until its subject has authenticated (the signed form is still required).
+  # Needs eSignet (and, for testing, the mock identity system) in the namespace.
+  subjectAuth:
+    enabled: false
+    providerName: National ID (eSignet)
+    esignetHostname: 'esignet.{{ tpl .Values.global.baseDomain $ }}'
+    discoveryUrl: 'https://{{ tpl .Values.partnerPortal.subjectAuth.esignetHostname $ }}/.well-known/openid-configuration'
+    # The CM's OIDC client in eSignet (registered by the job below).
+    clientId: '{{ .Release.Name }}-consent-partner-portal'
+    # eSignet sends the browser back here: the portal host routes
+    # /consent/v1/partner-portal/ to the CM api.
+    redirectUri: 'https://{{ tpl .Values.global.consentPartnerPortalHostname $ }}/consent/v1/partner-portal/subject-auth/callback'
+    acrValues: 'mosip:idp:acr:generated-code'
+    # Subject ID types that are the national ID (only these can log in).
+    idTypes: [FAYDA_FAN, NATIONAL_ID, national_id]
+    # The client's RSA key (private_key_jwt), kept in this Secret (key client.pem)
+    # and mounted into the api; generated once by the job, never rotated by it.
+    keySecretName: '{{ .Release.Name }}-subject-auth-client-key'
+    keyMountPath: /subject-auth
+    # Registers the client in eSignet's database (its client API needs a scope
+    # an install cannot obtain): a regular Job, re-run on each upgrade, that
+    # waits for eSignet's tables. Turn off where another system owns eSignet.
+    bootstrap:
+      enabled: true
+      esignetDbName: mosip_esignet
+      esignetDbUser: esignetuser
+      esignetDbSecret: esignet-db-user
+      esignetDbSecretKey: esignet-db-user-password
+      # Claims the client may ask for (individual_id is what is matched).
+      claims: [name, individual_id]
+      keygenImage: python:3.12-slim
+      psqlImage: postgres:16-alpine
+      kubectlImage: alpine/k8s:1.31.0
+      waitSeconds: 1200
+      backoffLimit: 3
+      ttlSecondsAfterFinished: 86400
+      resources:
+        requests: {cpu: 10m, memory: 32Mi}
+        limits: {cpu: 200m, memory: 128Mi}
+  # Test partner users (testing only). For each entry the chart keeps a
+  # generated password in the Secret below (key = username; kept across
+  # upgrades and uninstall). keycloak-init cannot set user attributes or read
+  # passwords from a Secret, so create these users by hand (see the steps above
+  # partner-keycloak-init) with these values:
+  #   - {username: bank-a-operator, partnerId: bank-a, roles: [PARTNER_OPERATOR]}
+  testUsers: []
+  testUsersSecretName: '{{ .Release.Name }}-partner-test-users'
+  replicaCount: 1
+  updateStrategy:
+    type: RollingUpdate
+  autoscaling:
+    enabled: false
+  serviceAccount:
+    create: false
+    name: ""
+  image:
+    repository: openg2p/consent-manager-partner-portal
+    tag: develop
+    pullPolicy: Always
+  containerPort: 8080
+  podSecurityContext:
+    enabled: false
+    fsGroup: 101          # nginx-unprivileged user
+  containerSecurityContext:
+    enabled: false
+    runAsUser: 101
+    runAsNonRoot: true
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+  service:
+    type: ClusterIP
+    port: 80
+  startupProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: http
+    periodSeconds: 5
+    failureThreshold: 10
+  livenessProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 30
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: http
+    periodSeconds: 10
+
+# ── Consent evidence storage (signed consent forms) ─────────────────────────
+# S3-compatible object storage for evidence uploaded through the partner
+# portal. Rendered into the staff api when `enabled` OR partnerPortal.enabled;
+# otherwise unset (uploads answer 503). Defaults: the OpenG2P commons Garage
+# and its shared read-write key (Secret `commons-minio`, written by the commons
+# Garage init job — historical name).
+# The bucket must exist and the key must be allowed on it (the commons Garage
+# key cannot create buckets). The commons-base Garage init job creates
+# consent-evidence and grants garage-key on it; on an older commons-base, once
+# in the garage pod:
+#   garage bucket create consent-evidence
+#   garage bucket allow --read --write --owner consent-evidence --key garage-key
+evidence:
+  enabled: false
+  s3:
+    endpoint: 'http://commons-garage:3900'
+    bucket: consent-evidence
+    # Must equal the Garage S3 region (commons Garage: us-east-1).
+    region: us-east-1
+    existingSecret: commons-minio
+    accessKeyKey: root-user
+    secretKeyKey: root-password
+  maxBytes: 10485760
 
 # Additional API-audience deployments in THIS chart (same image, separate
 # Deployment/Service/VirtualService). Each entry is merged OVER consentManagerApi,
@@ -287,9 +616,11 @@ consentManagerApi:
   # defined in `extraApis` below — same image, same chart, separate Deployments.
   apiAudience: staff
   authEnabled: '{{ .Values.global.consentManagerAuthEnabled }}'
-  # The staff api never signs — receipts/JWKS are the partner api's job — so the
-  # signing key is NOT mounted here (only on the partner api).
-  signingKeyMounted: false
+  # The staff api also mints receipts: the partner portal (mounted here) grants
+  # OTP consents, and staff approve assisted requests. They must be signed with
+  # the SAME persistent key the partner api publishes in its JWKS, or they fail
+  # to verify (and change on every restart). So the key is mounted here too.
+  signingKeyMounted: true
   replicaCount: 1
 
   # Horizontal scaling — the pods are stateless, so turn this on for high
@@ -372,7 +703,8 @@ consentManagerApi:
     secretName: consent-manager-signing
     secretKey: cm_signing.p12
     mountPath: /app/secrets
-    passwordSecretName: consent-manager-signing
+    # Empty: the same Secret as the .p12 (secretName).
+    passwordSecretName: ''
     passwordSecretKey: password
 
   # ── Periodic expiry sweep (CronJob) ─────────────────────────────────────
@@ -395,7 +727,8 @@ consentManagerApi:
     CONSENT_MANAGER_OPENAPI_ROOT_PATH: '{{ .Values.openapiRootPath }}'
     # NB: CONSENT_MANAGER_AUTH_ENABLED and CONSENT_MANAGER_CM_SIGNING_P12_PATH are
     # set PER-DEPLOYMENT (see apiAudience / authEnabled / signingKeyMounted) — the
-    # partner api runs auth-disabled and the signing key only mounts on it.
+    # partner api runs auth-disabled; the signing key mounts on the staff and
+    # partner apis (both mint receipts).
     CONSENT_MANAGER_AUTH_ISSUER: '{{ tpl .Values.global.keycloakIssuerUrl $ }}'
     CONSENT_MANAGER_AUTH_JWKS_URL: '{{ tpl .Values.global.keycloakIssuerUrl $ }}/protocol/openid-connect/certs'
     CONSENT_MANAGER_AUTH_ADMIN_ROLE: '{{ tpl .Values.global.consentManagerAdminRole $ }}'
@@ -408,18 +741,22 @@ consentManagerApi:
     CONSENT_MANAGER_AWE_HTTP_TIMEOUT_SECONDS: '{{ .Values.global.aweHttpTimeoutSeconds }}'
     CONSENT_MANAGER_AWE_POLICY_CHANGE_POLICY_KEY: '{{ tpl .Values.global.awePolicyChangePolicyKey $ }}'
     CONSENT_MANAGER_AWE_WEBHOOK_MAX_SKEW_SEC: '{{ .Values.global.aweWebhookMaxSkewSeconds }}'
-    # AWE posts terminal webhooks here (in-cluster; no ingress hop needed).
-    CONSENT_MANAGER_AWE_CALLBACK_URL: 'http://{{ .Release.Name }}-api/consent/v1/awe/webhooks/decision'
+    CONSENT_MANAGER_AWE_GATE_FIRST_POLICY: '{{ .Values.global.aweGateFirstPolicy }}'
+    CONSENT_MANAGER_AWE_FORWARD_CALLER_TOKEN: '{{ .Values.global.aweForwardCallerToken }}'
+    # (CONSENT_MANAGER_AWE_CALLBACK_URL is set per deployment from the staff api
+    #  service name — see consentManager.aweCallbackUrl in _helpers.tpl.)
     CONSENT_MANAGER_AWE_CALLBACK_SECRET_ID: '{{ tpl .Values.global.aweCallbackSecretId $ }}'
-    # CM→AWE service token via the consent-manager client (client-credentials).
-    CONSENT_MANAGER_AWE_TOKEN_URL: '{{ tpl .Values.global.keycloakIssuerUrl $ }}/protocol/openid-connect/token'
+    # CM→AWE service-token fallback via the consent-manager client
+    # (client-credentials), from the issuer AWE trusts (external by default).
+    CONSENT_MANAGER_AWE_TOKEN_URL: '{{ tpl (.Values.global.aweTokenUrl | default (printf "%s/protocol/openid-connect/token" (.Values.global.keycloakExternalIssuerUrl | default .Values.global.keycloakIssuerUrl))) $ }}'
     CONSENT_MANAGER_AWE_CLIENT_ID: '{{ tpl .Values.global.consentManagerAuthClientId $ }}'
+    CONSENT_MANAGER_PARTNER_CACHE_TTL_SEC: '{{ .Values.global.partnerPolicyCacheTtlSeconds }}'
     # In demo mode, force a distinctive kid so any receipt / JWKS makes it obvious
     # a demo (insecure) key is in use; otherwise use the configured kid.
     CONSENT_MANAGER_CM_SIGNING_KID: '{{ if eq .Values.signingKey.mode "demo" }}cm-demo-INSECURE{{ else }}{{ tpl .Values.global.consentSigningKid $ }}{{ end }}'
     CONSENT_MANAGER_CM_SIGNING_IS_DEMO: '{{ if and .Values.signingKey.enabled (eq .Values.signingKey.mode "demo") }}true{{ else }}false{{ end }}'
     # (CONSENT_MANAGER_CM_SIGNING_P12_PATH is set per-deployment when
-    #  signingKeyMounted — only the partner api, which mints receipts.)
+    #  signingKeyMounted — the staff and partner apis, which mint receipts.)
 
   envVarsFrom:
     CONSENT_MANAGER_DB_PASSWORD:
@@ -428,7 +765,7 @@ consentManagerApi:
         key: '{{ tpl .Values.global.consentDBUserPasswordKey $ }}'
     CONSENT_MANAGER_CM_SIGNING_P12_PASSWORD:
       secretKeyRef:
-        name: '{{ .Values.signingKey.passwordSecretName }}'
+        name: '{{ .Values.signingKey.passwordSecretName | default .Values.signingKey.secretName }}'
         key: '{{ .Values.signingKey.passwordSecretKey }}'
         optional: true
     # CM→AWE service-token secret (the consent-manager client secret).

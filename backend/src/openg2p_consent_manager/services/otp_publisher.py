@@ -4,7 +4,7 @@ This mirrors the OAN Gen 1 / A2C arrangement, where the Odoo consent module
 drops each generated OTP into the ``a2c-webhook`` bucket under ``otp/`` and a
 tester reads it from there. The A2C Postman collection only ever *reads* that
 bucket (both helpers are ``noauth``); the writing is done server-side, which is
-what this module does for the consent screen's OTP.
+what this module does for the OTP sent when a partner raises a request.
 
 The payload and the key are byte-compatible with theirs::
 
@@ -20,7 +20,7 @@ bucket can read a live OTP next to the individual it belongs to, which is the
 whole point when there is no SMS gateway and equally the reason it must stay
 off wherever real subjects exist. It is disabled by default, gated on
 ``otp_publish_enabled``, and the code is the same plaintext the service log
-already carries under ``otp_debug_enabled``.
+carries when ``otp_log_codes`` is on.
 
 Failure is never fatal: if the bucket is unreachable the OTP has still been
 issued and hashed, so the flow continues and only a warning is logged. Losing
@@ -145,7 +145,7 @@ class OtpPublisher(BaseService):
             "otp": code,
             "individualId": individual_id or request.otp_destination
                             or request.subject_id_value,
-            "individualIdType": id_type or _config.fayda_identifier_type,
+            "individualIdType": id_type or _config.otp_publish_id_type,
             "timestamp": now.isoformat(),
             # Ours, not A2C's - lets a reader tie the file back to the request
             # it belongs to without guessing. Extra keys are ignored by their

@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import DateTime, Integer, String, UniqueConstraint
+from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -17,16 +17,39 @@ class PartnerStatus(str, Enum):
 class PolicyStatus(str, Enum):
     # A versioned data-share policy's lifecycle. When AWE approval is enabled, a
     # widening policy is created `pending` and only becomes `active` once AWE
-    # approves it (superseding the prior active version); `rejected` if declined.
+    # approves it (superseding the prior active version); `rejected` if declined
+    # or cancelled. At most one version per binding is `pending`.
+    #   failed — the submission to AWE failed; it never reached approvers.
+    #   stale  — approved, but the active version changed after this one was
+    #            created (e.g. a narrowing went live meanwhile), so it was NOT
+    #            applied. Resubmit to have it re-evaluated against the current one.
+    # failed / stale / rejected versions can be resubmitted (copied into a new
+    # version, see POST .../policies/{version}/resubmit).
     pending = "pending"
     active = "active"
     superseded = "superseded"
     rejected = "rejected"
+    failed = "failed"
+    stale = "stale"
 
 
 class FetchType(str, Enum):
     oneshot = "oneshot"
     periodic = "periodic"
+
+
+class ConsentMethod(str, Enum):
+    """How the subject's consent must reach /validate for this binding.
+    NULL on a policy = ``partner_signed`` (the behaviour before this field)."""
+
+    # Only a consent the subject confirmed with an OTP at the CM, presented by
+    # its consent_id. A partner-signed consent_jws is refused.
+    otp = "otp"
+    # A partner-signed consent_jws or a stored consent (consent_id).
+    partner_signed = "partner_signed"
+    # An integration without subject consent (e.g. the aggregation layer
+    # calling a registry). Validated like partner_signed; the label records why.
+    internal = "internal"
 
 
 class Partner(BaseORMModelWithId):
@@ -37,14 +60,22 @@ class Partner(BaseORMModelWithId):
     Management service — this row is NOT the partner record, only CM's binding of
     a policy to that partner for a given controller. ``name`` is a non-authoritative
     display label only.
+
+    One partner (``audience``) may be bound to SEVERAL controllers — one row per
+    (audience, controller_id), each with its own versioned policy. A consent with
+    ``grants`` is validated by each controller against that controller's binding.
     """
 
     __tablename__ = "partners"
+    __table_args__ = (
+        UniqueConstraint("audience", "controller_id", name="uq_partner_audience_controller"),
+    )
 
     # Non-authoritative display label (identity lives in Partner Management).
     name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    # The identifier this partner presents as `aud` in a consent object.
-    audience: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    # The identifier this partner presents as `aud` in a consent object. Not
+    # unique on its own: unique per (audience, controller_id).
+    audience: Mapped[str] = mapped_column(String(255), index=True)
     controller_id: Mapped[str] = mapped_column(String(255), index=True)
     status: Mapped[str] = mapped_column(String(20), default=PartnerStatus.active.value)
     # The partner's reference in the Partner Management service — used to fetch
@@ -56,8 +87,10 @@ class Partner(BaseORMModelWithId):
 
 
 class PartnerPolicy(BaseORMModelWithId):
-    """The ceiling on everything a partner can be granted. Versioned. A widening
-    version may sit in `pending` awaiting AWE approval before it goes active."""
+    """The ceiling on everything a partner can be granted for one controller.
+    ``partner_id`` is the binding id, so a policy is per (audience, controller).
+    Versioned. A widening version may sit in `pending` awaiting AWE approval
+    before it goes active."""
 
     __tablename__ = "partner_policies"
     __table_args__ = (
@@ -73,38 +106,24 @@ class PartnerPolicy(BaseORMModelWithId):
     allowed_subject_id_types: Mapped[list] = mapped_column(JSONB, default=list)
     allowed_signing_algs: Mapped[list] = mapped_column(JSONB, default=list)
 
-    # How the subject must prove who they are before this partner's consent can
-    # be approved. "otp" makes the consent screen demand a one-time code;
-    # NULL keeps the original behaviour (an OIDC id_token is enough).
-    required_auth_method: Mapped[Optional[str]] = mapped_column(
-        String(20), nullable=True)
-
-    # WHY this partner may hold the data at all — a different axis from
-    # required_auth_method, which only says how the subject proves who they are.
-    # Deliberately a separate column: overloading the auth field would mean a
-    # typo in "how do you authenticate" could switch off consent entirely.
-    #
-    #   "consent"             the subject must have granted one. The default,
-    #                         and what every policy written before this meant.
-    #   "legitimate_interest" the controller's own lawful basis carries the
-    #                         access and no subject grant is sought. For an
-    #                         INTERNAL partner inside the controller's own
-    #                         organisation. Everything else still applies: the
-    #                         signature, the replay window, and above all the
-    #                         policy's allowed_data_scopes, which becomes the
-    #                         ceiling in the grant's place.
-    lawful_basis: Mapped[str] = mapped_column(String(40), default="consent")
-
     # ISO-8601 durations, e.g. "P1Y", "P30D". Parsed during evaluation.
     max_validity_duration: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     fetch_type: Mapped[str] = mapped_column(String(20), default=FetchType.oneshot.value)
     max_fetch_frequency: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     data_life: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # ConsentMethod; NULL = partner_signed.
+    consent_method: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
     # AWE approval correlation (set when this version is submitted for approval).
     awe_request_id: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True, index=True
     )
+    # Version that was active when this one was created (0 = none). An approval
+    # applies only if that is still the active version; otherwise → `stale`.
+    # NULL on rows created before this column existed (check skipped).
+    base_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Why a version ended failed / stale / rejected (shown in the UI).
+    status_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     effective_from: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True

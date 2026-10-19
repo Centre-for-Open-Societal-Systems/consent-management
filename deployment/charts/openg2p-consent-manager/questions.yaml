@@ -1,7 +1,11 @@
 questions:
 # ------------------------------ General -----------------------------
-# The hostname "namespace" segment is auto-derived from the install namespace
-# (.Release.Namespace); override the full hostname here only if it must differ.
+# Hostnames are <service>.<Base Domain>; override one only if it must differ.
+- variable: global.baseDomain
+  description: Domain every hostname sits under (<service>.<Base Domain>). Use the same value as the commons install. Defaults to <namespace>.openg2p.org.
+  type: string
+  label: Base Domain
+  group: General
 - variable: global.consentManagerHostname
   description: Hostname for the Consent Manager API
   type: string
@@ -76,7 +80,7 @@ questions:
   label: Signing Key Source
   group: Signing
 - variable: consentManagerApi.signingKey.secretName
-  description: Name of the existing Secret holding the .p12 (key cm_signing.p12) and its password (key password). Create it via Storage → Secrets with a file upload.
+  description: "Name of the existing Secret holding the .p12 (key cm_signing.p12) and its password (key password), in this namespace. Create it first via Storage → Secrets with a file upload."
   type: string
   default: consent-manager-signing
   label: Existing Signing Secret
@@ -163,3 +167,130 @@ questions:
   label: Run Full E2E (creates a test partner)
   group: Sanity
   show_if: sanity.enabled=true
+
+# ------------------------------ Exchange ----------------------------
+# Off by default: a standalone install leaves this alone. Pick a role and the
+# defaults are the reference values (Agri Stack's); fill the fields only to differ.
+- variable: global.agriStackExchange.role
+  description: "Consent tokens between Consent Managers, for a data exchange (e.g. Agri Stack) whose composites read several registries. exchange = this CM issues a consent token per registry to the Composite (the Exchange install); department = this CM accepts the Exchange CM's tokens (a registry's install); none = neither."
+  type: enum
+  options: [none, exchange, department]
+  default: none
+  label: Exchange Role
+  group: Exchange
+- variable: global.agriStackExchange.issuer
+  description: "The issuer ID on the tokens this CM signs. Empty = agri-stack-exchange-cm."
+  type: string
+  default: ""
+  label: Token Issuer ID
+  group: Exchange
+  show_if: global.agriStackExchange.role=exchange
+- variable: global.agriStackExchange.receiptPresenters
+  description: "Comma-separated partner IDs allowed to ask for tokens. Empty = agri-composite."
+  type: string
+  default: ""
+  label: Token Presenters
+  group: Exchange
+  show_if: global.agriStackExchange.role=exchange
+- variable: global.agriStackExchange.receiptTtlSeconds
+  description: "Token lifetime in seconds (capped by the consent's expiry)."
+  type: int
+  default: 900
+  label: Token Lifetime (seconds)
+  group: Exchange
+  show_if: global.agriStackExchange.role=exchange
+- variable: global.agriStackExchange.exchangeDomain
+  description: "The Exchange install's domain, e.g. agrix.example.org. Empty = agrix.<parent of this install's domain> (agrix.openg2p.org for trial.openg2p.org)."
+  type: string
+  default: ""
+  label: Exchange Domain
+  group: Exchange
+  show_if: global.agriStackExchange.role=department
+- variable: global.agriStackExchange.trustedIssuer.issuer
+  description: "The Exchange CM's issuer ID. Empty = agri-stack-exchange-cm."
+  type: string
+  default: ""
+  label: Trusted Token Issuer ID
+  group: Exchange
+  show_if: global.agriStackExchange.role=department
+- variable: global.agriStackExchange.trustedIssuer.presenter
+  description: "The only partner allowed to present its tokens here. Empty = agri-composite. Bind it at this CM with a policy per registry (setup_exchange.py does it)."
+  type: string
+  default: ""
+  label: Trusted Token Presenter
+  group: Exchange
+  show_if: global.agriStackExchange.role=department
+- variable: global.agriStackExchange.trustedIssuer.jwksUrl
+  description: "The Exchange CM's JWKS URL. Empty = https://consent-manager-partner.<exchange domain>/api/consent-manager-partner/.well-known/jwks.json."
+  type: string
+  default: ""
+  label: Trusted Issuer JWKS URL
+  group: Exchange
+  show_if: global.agriStackExchange.role=department
+- variable: global.agriStackExchange.receiptStatusCheck
+  description: "Check each token's status (revoked/expired) at the Exchange CM."
+  type: enum
+  options: [always, never]
+  default: always
+  label: Token Status Check
+  group: Exchange
+  show_if: global.agriStackExchange.role=department
+
+# --------------------------- Partner portal -------------------------
+# Off by default: a standalone install leaves this alone. ON deploys the
+# partner portal SPA, provisions the Keycloak `partner` realm + client, gives
+# the staff api the partner-realm token settings and turns on evidence storage.
+- variable: partnerPortal.enabled
+  description: "Deploy the partner portal (consent collected in person by partner users, e.g. bank staff) with evidence storage. Creates the Keycloak realm `partner` and the consent-partner-portal client. After install, run deployment/scripts/setup-partner-realm.sh once (realm roles, partner_id attribute and mapper, partner users)."
+  type: boolean
+  default: false
+  label: Partner Portal
+  group: Partner portal
+- variable: global.consentPartnerPortalHostname
+  description: Hostname of the partner portal (also its Keycloak client's redirect URI)
+  type: string
+  label: Partner Portal Hostname
+  group: Partner portal
+  show_if: partnerPortal.enabled=true
+- variable: partnerPortal.compositeUrl
+  description: "Optional Composite base URL (e.g. the Exchange's use-case service). When set, the portal lists the Composite's use cases and can prefill a request from one. Empty = none; for the exchange role, https://agri-composite.<this domain>."
+  type: string
+  default: ""
+  label: Composite URL
+  group: Partner portal
+  show_if: partnerPortal.enabled=true
+- variable: partnerPortal.subjectAuth.enabled
+  description: "The subject's national-ID login through eSignet, mandatory on every request (with the signed form and the staff check). Needs eSignet (and, for testing, the mock identity system) in the namespace; a job registers this CM's client in eSignet."
+  type: boolean
+  default: false
+  label: Require National-ID Login (eSignet)
+  group: Partner portal
+  show_if: partnerPortal.enabled=true&&global.agriStackExchange.role!=exchange
+- variable: partnerPortal.requiredSubjectIdentifiers
+  description: "Comma-separated identifiers every request must carry besides the subject ID, checked by staff in the registry before approving. Empty = none; for the exchange role, FARMER_ID."
+  type: string
+  default: ""
+  label: Required Subject Identifiers
+  group: Partner portal
+  show_if: partnerPortal.enabled=true
+- variable: evidence.s3.endpoint
+  description: "S3 endpoint for the uploaded signed consent forms (commons Garage by default). The bucket must exist and the key be allowed on it."
+  type: string
+  default: http://commons-garage:3900
+  label: Evidence Storage Endpoint
+  group: Partner portal
+  show_if: partnerPortal.enabled=true
+- variable: evidence.s3.bucket
+  description: Bucket for the signed consent forms
+  type: string
+  default: consent-evidence
+  label: Evidence Bucket
+  group: Partner portal
+  show_if: partnerPortal.enabled=true
+- variable: evidence.s3.existingSecret
+  description: "Secret holding the S3 access key (key root-user) and secret key (key root-password). Default: the commons Garage Secret commons-minio."
+  type: string
+  default: commons-minio
+  label: Evidence Storage Secret
+  group: Partner portal
+  show_if: partnerPortal.enabled=true

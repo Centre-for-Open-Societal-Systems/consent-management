@@ -1,0 +1,9 @@
+{
+  "apiBaseUrl": "",
+  "compositeUrl": "",
+  "keycloak": {
+    "url": "",
+    "realm": "partner",
+    "clientId": "consent-partner-portal"
+  }
+}

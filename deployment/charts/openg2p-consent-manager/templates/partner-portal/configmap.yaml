@@ -1,0 +1,33 @@
+{{- if .Values.partnerPortal.enabled }}
+{{- $values := .Values.partnerPortal -}}
+{{- $context := dict "Values" (merge (deepCopy $values) (dict "global" .Values.global)) "Chart" .Chart "Release" .Release "Files" .Files "Capabilities" .Capabilities -}}
+{{- with $context -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "common.names.fullname" . }}-config
+  labels: {{- include "common.labels.standard" (dict "customLabels" .Values.commonLabels "context" $) | nindent 4 }}
+data:
+  # Runtime config read by the partner portal SPA at boot. Mounted into nginx
+  # at /usr/share/nginx/html/config.json. apiBaseUrl empty = same origin: the
+  # portal VirtualService routes /consent/v1/partner-portal/ to the staff api.
+  # compositeUrl empty = no use-case catalogue (exchange role: the composite
+  # at agri-composite.<this domain>).
+  config.json: |
+    {
+      "apiBaseUrl": {{ tpl .Values.apiBaseUrl $ | quote }},
+      {{- $composite := tpl .Values.compositeUrl $ }}
+      {{- if and (not $composite) (eq (include "consentManager.exchangeRole" $) "exchange") }}
+      {{- $composite = printf "https://agri-composite.%s" (include "consentManager.ownDomain" $) }}
+      {{- end }}
+      "compositeUrl": {{ $composite | quote }},
+      "keycloak": {
+        "url":      {{ tpl .Values.keycloak.url $ | quote }},
+        "realm":    {{ tpl .Values.keycloak.realm $ | quote }},
+        "clientId": {{ .Values.keycloak.clientId | quote }}
+      },
+      "operatorRole": {{ .Values.operatorRole | quote }},
+      "adminRole":    {{ .Values.adminRole | quote }}
+    }
+{{- end -}}
+{{- end }}

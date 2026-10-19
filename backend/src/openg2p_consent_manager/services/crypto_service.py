@@ -1,9 +1,11 @@
+import json
 import logging
 import os
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 from cryptography.hazmat.primitives.asymmetric.ec import ECDSA
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from cryptography.hazmat.primitives.serialization import pkcs12
 from openg2p_fastapi_common.service import BaseService
 
@@ -108,6 +110,29 @@ class CryptoService(BaseService):
         else:
             raise ValueError(f"Unsupported CM signing key type: {type(key)}")
         return b64url_encode(sig)
+
+    def sign_jws(self, claims: dict, typ: str) -> str:
+        """Compact JWS (RFC 7515) over ``claims`` with the CM signing key — the
+        same key/kid/alg as the receipts, verifiable with the published JWKS.
+        ES256 uses the raw r||s form JWS requires (``sign`` returns DER)."""
+        header = {"alg": self.algorithm, "kid": self.kid, "typ": typ}
+        signing_input = (
+            b64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+            + "."
+            + b64url_encode(
+                json.dumps(claims, separators=(",", ":"), default=str).encode("utf-8")
+            )
+        )
+        key = self._private_key
+        if isinstance(key, ec.EllipticCurvePrivateKey):
+            r, s = decode_dss_signature(
+                key.sign(signing_input.encode("ascii"), ECDSA(hashes.SHA256()))
+            )
+            size = (key.curve.key_size + 7) // 8
+            signature = b64url_encode(r.to_bytes(size, "big") + s.to_bytes(size, "big"))
+        else:
+            signature = self.sign(signing_input.encode("ascii"))
+        return f"{signing_input}.{signature}"
 
     def public_jwks(self) -> dict:
         """Publish the CM public key as a JWKS document."""

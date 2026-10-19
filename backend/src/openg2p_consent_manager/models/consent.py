@@ -90,6 +90,10 @@ class ConsentRequest(BaseORMModelWithId):
     otp_destination: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     otp_provider: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     otp_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Across every code issued for the request; a resend does not reset them.
+    otp_send_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=0)
+    otp_last_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    otp_failures_total: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=0)
 
 
 class EvidenceKind(str, Enum):

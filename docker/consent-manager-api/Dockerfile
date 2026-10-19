@@ -1,7 +1,10 @@
 FROM python:3.12-slim-bookworm
 
 # External OpenG2P framework ref. Override via build-arg / CI input.
-ARG FASTAPI_COMMON_REF=1.2.0
+# Pinned to a commit with openg2p_fastapi_common.utils.crypto, which the code
+# imports (tag 1.2.0 has it under openg2p_fastapi_common.crypto instead, so the
+# service would not start). This is develop as CI resolved it on 2026-10-16.
+ARG FASTAPI_COMMON_REF=164f07f7e7f38944b60cb1528d2582d025b830b5
 
 # Only git is needed (to pip-install the framework from GitHub). All Python deps
 # ship prebuilt wheels — no compiler/headers required.
@@ -19,6 +22,10 @@ RUN pip install --no-cache-dir \
 # current branch.
 COPY backend /src/consent-manager
 RUN pip install --no-cache-dir /src/consent-manager
+
+# Startup smoke check: fail the BUILD, not the pod, when the framework ref does
+# not provide what the code imports (every service module is imported here).
+RUN python3 -c "import openg2p_consent_manager.app"
 
 ENV PYTHONUNBUFFERED=1
 ENV CONSENT_MANAGER_APP_HOST=0.0.0.0

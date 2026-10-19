@@ -172,6 +172,15 @@ class VerificationService(BaseService):
                 policy_version=policy_version,
             )
 
+        # A partner-signed consent is not enough for an "otp" binding — also
+        # when the same jti was permitted before the policy changed.
+        refused = self.policy.consent_method_refusal(policy, otp_confirmed=False) if policy else None
+        if refused is not None:
+            return await self._deny(
+                refused.reason, refused.detail, now, ctx_hash, partner_id=partner.id,
+                jti=obj.jti, data_controller=controller, policy_version=policy_version,
+            )
+
         # Idempotency: the same object (jti) presented again for the same
         # controller returns its existing decision. Keyed per (jti, controller),
         # so one consent validated by two registries gets two decisions and
@@ -379,6 +388,7 @@ class VerificationService(BaseService):
             else None
         )
         granted: dict[str, tuple[list, object, Optional[int]]] = {}
+        refused = None
         for g in stored:
             controller = g.get("data_controller")
             if not controller:
@@ -387,6 +397,17 @@ class VerificationService(BaseService):
             policy = material["policy"] if material else None
             if policy is None:
                 continue
+            # The current policy's subject id types, purposes and validity
+            # ceiling apply to a stored consent as they do to a signed one.
+            refusal = self.policy.consent_method_refusal(
+                policy, otp_confirmed=(artefact.assurance or {}).get("method") == "otp",
+            ) or self.policy.terms_refusal(
+                policy, subject_id_type=artefact.subject_id_type, purpose=artefact.purpose,
+                valid_from=artefact.valid_from, valid_until=artefact.valid_until,
+            )
+            if refusal is not None:
+                refused = refusal
+                continue
             effective = set(g.get("effective_data_scopes") or []) & set(
                 policy.allowed_data_scopes or []
             )
@@ -394,6 +415,11 @@ class VerificationService(BaseService):
                 effective &= requested
             if effective:
                 granted[controller] = (sorted(effective), material["partner"], policy.version)
+        if not granted and refused is not None:
+            return await self._deny(
+                refused.reason, refused.detail,
+                now, ctx_hash, data_controller=parsed.data_controller, **log,
+            )
         if not granted:
             return await self._deny(
                 ReasonCode.scope_exceeds_policy,

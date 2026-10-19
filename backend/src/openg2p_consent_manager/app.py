@@ -189,6 +189,13 @@ class Initializer(BaseInitializer):
                         "status_reason TEXT"
                     )
                 )
+                # How the subject's consent must arrive (NULL = partner_signed).
+                await conn.execute(
+                    text(
+                        "ALTER TABLE partner_policies ADD COLUMN IF NOT EXISTS "
+                        "consent_method VARCHAR(20)"
+                    )
+                )
                 await conn.execute(
                     text(
                         "UPDATE partner_policies p SET status = 'stale', status_reason = "
@@ -297,6 +304,9 @@ class Initializer(BaseInitializer):
                     ("otp_destination", "VARCHAR(255)"),
                     ("otp_provider", "VARCHAR(50)"),
                     ("otp_reference", "VARCHAR(255)"),
+                    ("otp_send_count", "INTEGER"),
+                    ("otp_last_sent_at", "TIMESTAMPTZ"),
+                    ("otp_failures_total", "INTEGER"),
                 ):
                     await conn.execute(
                         text(

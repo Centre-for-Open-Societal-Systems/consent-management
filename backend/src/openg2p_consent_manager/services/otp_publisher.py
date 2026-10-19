@@ -20,7 +20,7 @@ bucket can read a live OTP next to the individual it belongs to, which is the
 whole point when there is no SMS gateway and equally the reason it must stay
 off wherever real subjects exist. It is disabled by default, gated on
 ``otp_publish_enabled``, and the code is the same plaintext the service log
-already carries (the provider logs it).
+carries when ``otp_log_codes`` is on.
 
 Failure is never fatal: if the bucket is unreachable the OTP has still been
 issued and hashed, so the flow continues and only a warning is logged. Losing

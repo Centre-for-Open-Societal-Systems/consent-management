@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from openg2p_fastapi_common.service import BaseService
+from sqlalchemy import func, select
 
 from ..config import Settings
 from ..db import async_session
@@ -34,6 +35,7 @@ from .assisted_service import AssistedConsentService
 from .lifecycle_service import LifecycleError
 from .otp_service import OtpError, OtpService
 from .partner_service import PartnerService
+from .policy_service import PolicyService
 from .receipt_service import ReceiptService
 
 _config = Settings.get_config()
@@ -52,6 +54,7 @@ class OtpConsentService(BaseService):
         self.assisted = AssistedConsentService.get_component()
         self.partners = PartnerService.get_component()
         self.receipts = ReceiptService.get_component()
+        self.policy = PolicyService.get_component()
 
     @property
     def otp(self) -> OtpService:
@@ -66,6 +69,9 @@ class OtpConsentService(BaseService):
     async def create_request(self, audience: str, username: str, data) -> ConsentRequest:
         """Raise the request (checked against the partner's policies exactly as
         an assisted request is) and send the subject the code."""
+        if self.otp.readiness_error():  # refused before anything is stored
+            raise LifecycleError(503, "otp_unavailable")
+        await self._check_subject_budget(data.subject_id.value)
         req = await self.assisted.create_request(audience, username, data)
         async with async_session()() as session:
             req = await session.get(ConsentRequest, req.id, with_for_update=True)
@@ -82,6 +88,25 @@ class OtpConsentService(BaseService):
                      req.id, audience, username)
         return req
 
+    @staticmethod
+    async def _check_subject_budget(subject_id_value: str) -> None:
+        """Codes sent to one subject, by any partner, within the window: the
+        sends of every OTP request that had a code sent in it (an over-count,
+        never an under-count)."""
+        since = datetime.now(timezone.utc) - timedelta(seconds=_config.otp_subject_window_sec)
+        async with async_session()() as session:
+            sent = (
+                await session.execute(
+                    select(func.coalesce(func.sum(ConsentRequest.otp_send_count), 0)).where(
+                        ConsentRequest.method == RequestMethod.otp.value,
+                        ConsentRequest.subject_id_value == subject_id_value,
+                        ConsentRequest.otp_last_sent_at >= since,
+                    )
+                )
+            ).scalar_one()
+        if sent >= _config.otp_max_sends_per_subject:
+            raise LifecycleError(429, "subject_otp_limit_reached")
+
     async def get_request(self, request_id: str, audience: str) -> Optional[ConsentRequest]:
         async with async_session()() as session:
             req = await session.get(ConsentRequest, request_id)
@@ -95,6 +120,15 @@ class OtpConsentService(BaseService):
                 raise LifecycleError(404, "not_found")
             if req.status != RequestStatus.pending.value:
                 raise LifecycleError(409, f"request is '{req.status}'")
+            # A new code resets the attempts for that code only; these budgets
+            # are what stop resends from undoing a lockout.
+            now = datetime.now(timezone.utc)
+            last = _aware(req.otp_last_sent_at) if req.otp_last_sent_at else None
+            if last is not None and now < last + timedelta(seconds=_config.otp_resend_cooldown_sec):
+                raise LifecycleError(429, "resend_too_soon")
+            if (req.otp_send_count or 0) >= _config.otp_max_sends_per_request:
+                raise LifecycleError(429, "resend_limit_reached")
+            await self._check_subject_budget(req.subject_id_value)
             try:
                 await self.otp.issue(req, req.subject_id_value)
             except OtpError as exc:
@@ -118,16 +152,38 @@ class OtpConsentService(BaseService):
             try:
                 await self.otp.verify(req, code)
             except OtpError as exc:
-                await session.commit()  # keep the attempt count
-                raise LifecycleError(exc.status, exc.reason) from exc
+                status, reason = exc.status, exc.reason
+                if (req.otp_failures_total or 0) >= _config.otp_max_failures_per_request:
+                    # Out of guesses over all its codes: the request is closed
+                    # and the partner must raise a new one.
+                    req.status = RequestStatus.cancelled.value
+                    req.verification_note = "OTP failure limit reached"
+                    _logger.warning("OTP consent request %s cancelled: failure limit", req.id)
+                    status, reason = 429, "otp_failure_limit_reached"
+                await session.commit()  # keep the attempt counts
+                raise LifecycleError(status, reason) from exc
 
-            grants, fetch_type, max_validity = [], None, None
+            now = datetime.now(timezone.utc)
+            valid_from = _aware(req.valid_from) if req.valid_from else now
+            # The whole current policy applies, not only its scopes: a grant
+            # whose purpose, subject id type or requested validity the policy
+            # no longer allows is dropped. Without an explicit end the validity
+            # is derived from the remaining policies below, so it always fits.
+            until = _aware(req.valid_until) if req.valid_until else valid_from
+            grants, fetch_type, max_validity, refusal = [], None, None, None
             for rg in req.grants or []:
                 binding = await session.get(Partner, rg["partner_binding_id"])
                 if binding is None or binding.status != PartnerStatus.active.value:
                     continue
                 policy = await self.partners.get_policy(binding.id)
                 if policy is None:
+                    continue
+                refused = self.policy.terms_refusal(
+                    policy, subject_id_type=req.subject_id_type, purpose=req.purpose,
+                    valid_from=valid_from, valid_until=until,
+                )
+                if refused is not None:
+                    refusal = f"{refused.reason.value} for data_controller '{rg['data_controller']}'"
                     continue
                 effective = sorted(set(rg["data_scopes"]) & set(policy.allowed_data_scopes or []))
                 if not effective:
@@ -149,11 +205,9 @@ class OtpConsentService(BaseService):
             if not grants:
                 await session.commit()  # the code is spent either way
                 raise LifecycleError(
-                    422, "no requested scope is permitted by the partner's current policy"
+                    422, refusal or "no requested scope is permitted by the partner's current policy"
                 )
 
-            now = datetime.now(timezone.utc)
-            valid_from = _aware(req.valid_from) if req.valid_from else now
             valid_until = (
                 _aware(req.valid_until) if req.valid_until
                 else valid_from + (max_validity or _DEFAULT_VALIDITY)

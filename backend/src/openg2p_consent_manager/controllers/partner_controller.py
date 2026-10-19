@@ -246,6 +246,7 @@ class PartnerController(BaseController):
             "fetch_type": policy.fetch_type,
             "max_fetch_frequency": policy.max_fetch_frequency,
             "data_life": policy.data_life,
+            "consent_method": policy.consent_method,
         }
         try:
             request_id = await self.awe.create_request(

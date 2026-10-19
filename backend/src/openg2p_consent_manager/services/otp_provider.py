@@ -11,10 +11,12 @@ Two providers, one interface:
 ``internal``
     The generic equivalent: a random code with no Fayda framing.
 
-Neither provider *delivers* anything yet: there is no SMS gateway, so both
-write the code to the service log and say so. A real Fayda / SMS deployment
-plugs in by implementing ``issue`` and ``verify``; nothing above this file
-changes.
+Neither provider *delivers* anything yet (``delivers = False``): there is no
+SMS gateway. For testing, the code can be written to the service log
+(``otp_log_codes``) or to a bucket (``otp_publish_enabled``); with neither,
+OtpService refuses to issue. A real Fayda / SMS deployment plugs in by
+implementing ``issue`` and ``verify`` and setting ``delivers = True``; nothing
+above this file changes.
 """
 import hashlib
 import hmac
@@ -40,6 +42,7 @@ class OtpError(Exception):
 
 class OtpProvider(Protocol):
     name: str
+    delivers: bool  # True when issue() actually gets the code to the subject
 
     async def issue(self, request, destination: str) -> None: ...
     async def verify(self, request, code: str) -> None: ...
@@ -73,8 +76,22 @@ async def _publish(request, code: str, individual_id: str) -> None:
         _logger.warning("OTP publish skipped: %s", exc)
 
 
+def _announce(request, code: str, destination: str, provider: str) -> None:
+    """Say a code was issued. The code itself only with ``otp_log_codes``
+    (test harness), since anything that reads the log could then use it."""
+    if _config.otp_log_codes:
+        _logger.warning(
+            "[OTP] %s for '%s' (consent request %s, provider %s) - otp_log_codes is on; "
+            "NO message was delivered. Never enable this with real subjects.",
+            code, destination, request.id, provider,
+        )
+    else:
+        _logger.info("OTP issued for consent request %s (provider %s)", request.id, provider)
+
+
 def _count_failure(request) -> OtpError:
     request.otp_attempts = (request.otp_attempts or 0) + 1
+    request.otp_failures_total = (request.otp_failures_total or 0) + 1
     left = max(0, _config.otp_max_attempts - request.otp_attempts)
     return OtpError(401, "otp_invalid", "incorrect OTP; %d attempt(s) remaining" % left)
 
@@ -84,6 +101,7 @@ class FaydaOtpProvider:
     transaction IS the consent-request row, so it is as durable as the request."""
 
     name = "fayda"
+    delivers = False
 
     async def issue(self, request, destination: str) -> None:
         transaction_id = request.id
@@ -98,12 +116,7 @@ class FaydaOtpProvider:
         request.otp_destination = destination
         request.otp_provider = self.name
         await _publish(request, code, destination)
-        _logger.warning(
-            "[OTP] %s for individualId '%s' (consent request %s) - generated in-process "
-            "with Fayda rules; NO message was delivered. Wire a real Fayda or an SMS "
-            "gateway before any non-demo use.",
-            code, destination, transaction_id,
-        )
+        _announce(request, code, destination, self.name)
 
     async def verify(self, request, code: str) -> None:
         _check_window(request)
@@ -132,6 +145,7 @@ class InternalOtpProvider:
     """A random code with no Fayda framing. The simplest thing that works."""
 
     name = "internal"
+    delivers = False
 
     @staticmethod
     def _hash(code: str, request_id: str) -> str:
@@ -150,11 +164,7 @@ class InternalOtpProvider:
         request.otp_destination = destination
         request.otp_provider = self.name
         await _publish(request, code, destination)
-        _logger.warning(
-            "[OTP] %s for subject '%s' (consent request %s) - the internal provider only "
-            "logs the code; no message was delivered.",
-            code, destination, request.id,
-        )
+        _announce(request, code, destination, self.name)
 
     async def verify(self, request, code: str) -> None:
         if not request.otp_hash:

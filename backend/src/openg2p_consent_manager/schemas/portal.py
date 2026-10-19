@@ -24,6 +24,8 @@ class PartnerBindingView(BaseModel):
     allowed_purposes: List[str]
     allowed_subject_id_types: List[str]
     max_validity_duration: Optional[str] = None
+    # otp: only OTP-confirmed consents are honoured at /validate.
+    consent_method: str = "partner_signed"
 
 
 class Purpose(BaseModel):

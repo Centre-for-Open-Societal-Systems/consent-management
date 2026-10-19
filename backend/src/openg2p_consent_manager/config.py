@@ -253,14 +253,27 @@ class Settings(BaseSettings):
 
     # ── OTP consent: partner raises a request, the CM sends the subject a code,
     # the partner submits it and the consent is granted (partner portal API) ──
-    otp_provider: str = "fayda"  # fayda | internal (both only log the code for now)
+    otp_provider: str = "fayda"  # fayda | internal (neither delivers the code yet)
     otp_length: int = 6
     otp_ttl_sec: int = 300
-    otp_max_attempts: int = 3
+    otp_max_attempts: int = 3  # wrong codes per issued code
+    # Budgets that a resend cannot reset:
+    otp_resend_cooldown_sec: int = 60  # between two codes for one request
+    otp_max_sends_per_request: int = 3  # the first code + 2 resends
+    otp_max_failures_per_request: int = 6  # wrong codes over all its codes; then cancelled
+    # Codes sent to one subject (any partner) within the window.
+    otp_subject_window_sec: int = 3600
+    otp_max_sends_per_subject: int = 10
     # Mixed into the stored hash so a leaked row cannot be brute-forced offline.
-    # Set per environment.
-    otp_salt: str = "change-me-per-environment"
+    # REQUIRED: no default, so no environment shares a public value. Without it
+    # no code is issued (503).
+    otp_salt: str = ""
     otp_channel: str = "PHONE"
+    # TEST HARNESS (no SMS gateway yet): write each live code to the service
+    # log. Off by default; never on where real subjects exist. With neither
+    # this nor otp_publish_enabled there is no way to deliver a code, so none
+    # is issued (503).
+    otp_log_codes: bool = False
     # TEST HARNESS (no SMS gateway yet): each issued OTP is also written as a
     # JSON object to an S3/MinIO bucket under otp/, as in OAN Gen 1 / A2C, so a
     # tester or partner sandbox can read it. Off by default; never on where

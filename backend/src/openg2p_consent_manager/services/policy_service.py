@@ -6,6 +6,7 @@ from typing import List, Optional
 from openg2p_fastapi_common.service import BaseService
 
 from ..config import Settings
+from ..models.partner import ConsentMethod
 from ..schemas.common import ReasonCode
 from ..utils.canonical import iso_duration_to_timedelta
 
@@ -133,3 +134,56 @@ class PolicyService(BaseService):
             True, ReasonCode.ok,
             effective_scopes=sorted(effective), policy_version=version,
         )
+
+    @staticmethod
+    def consent_method_refusal(policy, *, otp_confirmed: bool) -> Optional[PolicyResult]:
+        """The binding's ``consent_method``: ``otp`` accepts only a consent the
+        subject confirmed with an OTP at the CM; ``partner_signed`` (or none)
+        and ``internal`` accept what they always did. None when accepted."""
+        if policy.consent_method == ConsentMethod.otp.value and not otp_confirmed:
+            return PolicyResult(
+                False, ReasonCode.consent_method_not_allowed,
+                "this partner's policy requires a consent the subject confirmed "
+                "with an OTP, presented by its consent_id",
+                policy_version=policy.version,
+            )
+        return None
+
+    def terms_refusal(
+        self, policy, *, subject_id_type: str, purpose: Optional[dict],
+        valid_from: datetime, valid_until: datetime,
+    ) -> Optional[PolicyResult]:
+        """Steps 5, 6 and the duration ceiling of 8 above, for a consent the CM
+        holds (an OTP or assisted request about to be granted, or a stored
+        consent presented by ID) against the binding's policy as it is NOW.
+        None when the terms fit."""
+        version = policy.version
+        if (
+            policy.allowed_subject_id_types
+            and subject_id_type not in policy.allowed_subject_id_types
+        ):
+            return PolicyResult(
+                False, ReasonCode.subject_not_allowed,
+                f"subject_id_type '{subject_id_type}' not permitted", policy_version=version,
+            )
+        purpose_code = (purpose or {}).get("code")
+        if policy.allowed_purposes and purpose_code not in policy.allowed_purposes:
+            return PolicyResult(
+                False, ReasonCode.purpose_not_allowed,
+                f"purpose '{purpose_code}' not permitted", policy_version=version,
+            )
+        if policy.max_validity_duration:
+            try:
+                max_delta = iso_duration_to_timedelta(policy.max_validity_duration)
+            except ValueError:
+                _logger.warning(
+                    "Invalid max_validity_duration on policy %s: %s",
+                    policy.id, policy.max_validity_duration,
+                )
+            else:
+                if _aware(valid_until) - _aware(valid_from) > max_delta:
+                    return PolicyResult(
+                        False, ReasonCode.validity_exceeds_policy,
+                        "validity longer than policy allows", policy_version=version,
+                    )
+        return None

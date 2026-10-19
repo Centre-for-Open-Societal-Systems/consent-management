@@ -616,9 +616,11 @@ consentManagerApi:
   # defined in `extraApis` below — same image, same chart, separate Deployments.
   apiAudience: staff
   authEnabled: '{{ .Values.global.consentManagerAuthEnabled }}'
-  # The staff api never signs — receipts/JWKS are the partner api's job — so the
-  # signing key is NOT mounted here (only on the partner api).
-  signingKeyMounted: false
+  # The staff api also mints receipts: the partner portal (mounted here) grants
+  # OTP consents, and staff approve assisted requests. They must be signed with
+  # the SAME persistent key the partner api publishes in its JWKS, or they fail
+  # to verify (and change on every restart). So the key is mounted here too.
+  signingKeyMounted: true
   replicaCount: 1
 
   # Horizontal scaling — the pods are stateless, so turn this on for high
@@ -725,7 +727,8 @@ consentManagerApi:
     CONSENT_MANAGER_OPENAPI_ROOT_PATH: '{{ .Values.openapiRootPath }}'
     # NB: CONSENT_MANAGER_AUTH_ENABLED and CONSENT_MANAGER_CM_SIGNING_P12_PATH are
     # set PER-DEPLOYMENT (see apiAudience / authEnabled / signingKeyMounted) — the
-    # partner api runs auth-disabled and the signing key only mounts on it.
+    # partner api runs auth-disabled; the signing key mounts on the staff and
+    # partner apis (both mint receipts).
     CONSENT_MANAGER_AUTH_ISSUER: '{{ tpl .Values.global.keycloakIssuerUrl $ }}'
     CONSENT_MANAGER_AUTH_JWKS_URL: '{{ tpl .Values.global.keycloakIssuerUrl $ }}/protocol/openid-connect/certs'
     CONSENT_MANAGER_AUTH_ADMIN_ROLE: '{{ tpl .Values.global.consentManagerAdminRole $ }}'
@@ -753,7 +756,7 @@ consentManagerApi:
     CONSENT_MANAGER_CM_SIGNING_KID: '{{ if eq .Values.signingKey.mode "demo" }}cm-demo-INSECURE{{ else }}{{ tpl .Values.global.consentSigningKid $ }}{{ end }}'
     CONSENT_MANAGER_CM_SIGNING_IS_DEMO: '{{ if and .Values.signingKey.enabled (eq .Values.signingKey.mode "demo") }}true{{ else }}false{{ end }}'
     # (CONSENT_MANAGER_CM_SIGNING_P12_PATH is set per-deployment when
-    #  signingKeyMounted — only the partner api, which mints receipts.)
+    #  signingKeyMounted — the staff and partner apis, which mint receipts.)
 
   envVarsFrom:
     CONSENT_MANAGER_DB_PASSWORD:

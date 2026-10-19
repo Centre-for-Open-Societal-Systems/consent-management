@@ -15,6 +15,9 @@ class ReasonCode(str, Enum):
     purpose_not_allowed = "purpose_not_allowed"
     scope_exceeds_policy = "scope_exceeds_policy"
     validity_exceeds_policy = "validity_exceeds_policy"
+    # The policy's consent_method does not accept this kind of consent (e.g.
+    # a partner-signed consent_jws for an "otp" partner).
+    consent_method_not_allowed = "consent_method_not_allowed"
     expired = "expired"
     revoked = "revoked"
     replay = "replay"

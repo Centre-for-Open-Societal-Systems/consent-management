@@ -84,6 +84,7 @@ class AssistedConsentService(BaseService):
                     "allowed_purposes": list(policy.allowed_purposes or []),
                     "allowed_subject_id_types": list(policy.allowed_subject_id_types or []),
                     "max_validity_duration": policy.max_validity_duration,
+                    "consent_method": policy.consent_method or "partner_signed",
                 }
                 for binding, policy in rows.all()
             ]

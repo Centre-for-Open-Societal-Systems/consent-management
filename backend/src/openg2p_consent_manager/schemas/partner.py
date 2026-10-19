@@ -11,7 +11,7 @@ from pydantic import (
 )
 
 from ..config import Settings
-from ..models.partner import FetchType, PartnerStatus
+from ..models.partner import ConsentMethod, FetchType, PartnerStatus
 from ..utils.canonical import iso_duration_to_timedelta
 
 # ── Allowed values (single source of truth; served to the UI by GET /consent/v1/meta)
@@ -25,6 +25,7 @@ def allowed_signing_algorithms() -> List[str]:
 
 
 FETCH_TYPES = [f.value for f in FetchType]
+CONSENT_METHODS = [m.value for m in ConsentMethod]
 PARTNER_STATUSES = [s.value for s in PartnerStatus]
 # Policy durations are stored in VARCHAR(32) columns.
 _DURATION_MAX_LEN = 32
@@ -111,6 +112,8 @@ class PolicyFields(BaseModel):
     fetch_type: str = FetchType.oneshot.value
     max_fetch_frequency: Optional[str] = None
     data_life: Optional[str] = Field(None, examples=["P30D"])
+    # otp | partner_signed | internal; null = partner_signed (as before).
+    consent_method: Optional[str] = Field(None, examples=["otp"])
 
 
 class PolicyUpsert(PolicyFields):
@@ -122,6 +125,10 @@ class PolicyUpsert(PolicyFields):
     - durations: ISO-8601 (``P30D``, ``P1Y``, ``PT12H``, ``P1DT6H``), > 0, or null.
     - scopes / purposes / subject id types are open sets (registry-defined);
       entries are trimmed, blanks and duplicates dropped.
+    - ``consent_method``: ``otp`` | ``partner_signed`` | ``internal``. Left out,
+      the binding keeps its current method (``partner_signed`` for a new one),
+      so clients that do not know the field change nothing; null resets it to
+      ``partner_signed``.
     """
 
     model_config = ConfigDict(use_enum_values=True)
@@ -159,6 +166,15 @@ class PolicyUpsert(PolicyFields):
     def _fetch_type(cls, value):
         if value not in FETCH_TYPES:
             raise ValueError(f"fetch_type: {value!r} is not one of {FETCH_TYPES}")
+        return value
+
+    @field_validator("consent_method", mode="before")
+    @classmethod
+    def _consent_method(cls, value):
+        if isinstance(value, str):
+            value = value.strip().lower() or None
+        if value is not None and value not in CONSENT_METHODS:
+            raise ValueError(f"consent_method: {value!r} is not one of {CONSENT_METHODS}")
         return value
 
     @field_validator("max_validity_duration", "max_fetch_frequency", "data_life", mode="before")

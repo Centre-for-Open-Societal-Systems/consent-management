@@ -18,6 +18,7 @@ from .consent import (
 )
 from .exchange import IssuedReceipt
 from .partner import (
+    ConsentMethod,
     FetchType,
     Partner,
     PartnerPolicy,
@@ -34,6 +35,7 @@ __all__ = [
     "PolicyStatus",
     "AweProcessedEvent",
     "FetchType",
+    "ConsentMethod",
     "ConsentRequest",
     "RequestStatus",
     "RequestMethod",

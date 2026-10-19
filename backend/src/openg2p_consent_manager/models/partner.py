@@ -38,6 +38,20 @@ class FetchType(str, Enum):
     periodic = "periodic"
 
 
+class ConsentMethod(str, Enum):
+    """How the subject's consent must reach /validate for this binding.
+    NULL on a policy = ``partner_signed`` (the behaviour before this field)."""
+
+    # Only a consent the subject confirmed with an OTP at the CM, presented by
+    # its consent_id. A partner-signed consent_jws is refused.
+    otp = "otp"
+    # A partner-signed consent_jws or a stored consent (consent_id).
+    partner_signed = "partner_signed"
+    # An integration without subject consent (e.g. the aggregation layer
+    # calling a registry). Validated like partner_signed; the label records why.
+    internal = "internal"
+
+
 class Partner(BaseORMModelWithId):
     """A partner *policy binding*: it binds a Partner-Management partner (by
     ``partner_mgmt_id``) to a data controller and a versioned data-share policy.
@@ -97,6 +111,8 @@ class PartnerPolicy(BaseORMModelWithId):
     fetch_type: Mapped[str] = mapped_column(String(20), default=FetchType.oneshot.value)
     max_fetch_frequency: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     data_life: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # ConsentMethod; NULL = partner_signed.
+    consent_method: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
     # AWE approval correlation (set when this version is submitted for approval).
     awe_request_id: Mapped[Optional[str]] = mapped_column(

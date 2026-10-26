@@ -20,17 +20,22 @@ Both follow [`../BENE-API-ESIGNET-AUTH.md`](../BENE-API-ESIGNET-AUTH.md) (sectio
   with a binding for `data_controller`. Folder **0 Setup** raises new requests on
   every run, so a run can be repeated.
 
-## Environments
+## Files
 
-The collections hold no host, ID or password: everything comes from an environment,
-so the same collection runs against any deployment. `environments/` has three files.
-None holds a password.
+Each collection has its own environment file next to it, with the same name.
+Import both into Postman (**Import** → select the two files), or pass both to the CLI.
 
-| File | Use |
+| Collection | Environment |
 |---|---|
-| `local.postman_environment.json` | A Consent Manager running on your machine (bene API `:8073`, staff API `:8071`, eSignet `:8088`, Keycloak `:8090`) with the mock identity test IDs. Ready to run. |
-| `oan-development.postman_environment.json` | OAN development (`consent-manager`, `keycloak` and `esignet` on `development.oanstaging.com`). The URLs are filled in. Ask that environment's teams for the test data: `partner_audience`, `farmer_national_id`, `other_national_id`, `otp`. It needs `beneApiAuth` / `consentLogin` deployed there (until then `1a` answers `404`). |
-| `template.postman_environment.json` | Every variable empty. For any other environment: copy it, rename it (e.g. `staging.postman_environment.json`), fill it in. |
+| `consent-manager-bene-api-esignet.postman_collection.json` | `consent-manager-bene-api-esignet.postman_environment.json` ("Consent Manager - Bene API (eSignet login)") |
+| `consent-manager-consent-login-esignet.postman_collection.json` | `consent-manager-consent-login-esignet.postman_environment.json` ("Consent Manager - Consent login (eSignet)") |
+
+The collections hold no host, ID or password; everything comes from the environment.
+The environment values are the defaults of the repo's Docker Compose setup
+(`local-run/`): bene API `:8073`, staff API `:8071`, eSignet `:8088`, Keycloak `:8090`,
+and the test IDs and OTP of eSignet's mock identity system. For another deployment,
+change the values in the environment after import, or override them for one run
+with `--env-var <name>=<value>`. No password is stored.
 
 On a deployed Consent Manager, the bene API and the staff API share the console host
 (the console route sends the farmer's paths to the bene API), so `bene_api_url` and
@@ -45,7 +50,7 @@ is missing, it stops there and names it.
 | `staff_api_url` | Staff API base URL, ending in `/consent/v1` (only used to find the partner binding) |
 | `esignet_api_url` | eSignet API base URL, ending in `/v1/esignet` |
 | `keycloak_url`, `staff_realm`, `staff_client_id` | Keycloak base URL (without `/realms`), staff realm, and a client that allows the password grant |
-| `staff_username`, `staff_password` | Staff user for setup. **Pass them with `--env-var`, never commit them.** |
+| `staff_username`, `staff_password` | Staff user for setup. Empty in the files: **set them after import, or pass them with `--env-var`. Never commit them.** |
 | `partner_audience`, `data_controller`, `data_scope`, `purpose_code` | What the setup requests ask for |
 | `subject_id_type` | ID type of the requests; must be one of `SUBJECT_AUTH_ID_TYPES` |
 | `farmer_national_id`, `other_national_id` | Test national IDs in the mock identity system |
@@ -56,39 +61,33 @@ that the run sets itself.
 
 ## Run
 
+**In the Postman app:** import the collection and its environment, select the
+environment, fill in `staff_username` and `staff_password` (and change the URLs
+if the Consent Manager is not on your machine), then run the collection with the
+Collection Runner. Keep the request order: later requests use the IDs and tokens the
+earlier ones set.
+
 With the [Postman CLI](https://learning.postman.com/docs/postman-cli/postman-cli-overview/):
 
 ```sh
-postman collection run postman/consent-manager-bene-api-esignet.postman_collection.json \
-  -e postman/environments/local.postman_environment.json \
-  --env-var staff_username=<staff user> --env-var staff_password=<password>
+postman collection run postman/consent-manager-bene-api-esignet.postman_collection.json   -e postman/consent-manager-bene-api-esignet.postman_environment.json   --env-var staff_username=<staff user> --env-var staff_password=<password>
 
-postman collection run postman/consent-manager-consent-login-esignet.postman_collection.json \
-  -e postman/environments/local.postman_environment.json \
-  --env-var staff_username=<staff user> --env-var staff_password=<password>
+postman collection run postman/consent-manager-consent-login-esignet.postman_collection.json   -e postman/consent-manager-consent-login-esignet.postman_environment.json   --env-var staff_username=<staff user> --env-var staff_password=<password>
+```
+
+Against a deployed Consent Manager, override the URLs and test data the same way:
+
+```sh
+postman collection run postman/consent-manager-bene-api-esignet.postman_collection.json   -e postman/consent-manager-bene-api-esignet.postman_environment.json   --env-var bene_api_url=https://<console host>/consent/v1   --env-var staff_api_url=https://<console host>/consent/v1   --env-var esignet_api_url=https://<esignet host>/v1/esignet   --env-var keycloak_url=https://<keycloak host>   --env-var staff_username=<staff user> --env-var staff_password=<password>   --env-var partner_audience=<partner> --env-var farmer_national_id=<test ID>   --env-var other_national_id=<second test ID> --env-var otp=<mock OTP>
 ```
 
 [newman](https://github.com/postmanlabs/newman) takes the same files
 (`newman run <collection> -e <environment> --env-var ...`). For CI, add
 `-r cli,junit --reporter-junit-export results.xml`.
 
-Another environment: the same command with its file, e.g.
-`-e postman/environments/oan-development.postman_environment.json`. A value can
-also be set or overridden for one run with `--env-var <name>=<value>`, e.g. the test
-IDs and OTP:
-
-```sh
-postman collection run postman/consent-manager-bene-api-esignet.postman_collection.json   -e postman/environments/oan-development.postman_environment.json   --env-var staff_username=<staff user> --env-var staff_password=<password>   --env-var partner_audience=<partner> --env-var farmer_national_id=<test ID>   --env-var other_national_id=<second test ID> --env-var otp=<mock OTP>
-```
-
 Expected result: every assertion passes (bene API: 36 requests, 74 assertions;
 consent login: 53 requests, 112 assertions). Each request also checks that it did
 not get a server error (5xx).
-
-**In the Postman app:** import the collection and an environment, select the
-environment, set `staff_username` and `staff_password` in it, then run the
-collection with the Collection Runner. Keep the request order: later requests use
-the IDs and tokens the earlier ones set.
 
 ## When a run fails
 

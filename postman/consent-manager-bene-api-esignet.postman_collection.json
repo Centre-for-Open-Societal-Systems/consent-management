@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "3d6a13f7-363a-5c3d-957d-d2890de448f6",
     "name": "Consent Manager - Bene API (eSignet login)",
-    "description": "Beneficiary (bene) API with **national-ID login through eSignet**, end to end and without a browser: the farmer logs in as an API client (login without `return_url` → eSignet OTP → callback answers a one-time code as JSON → bene API token), then every bene API route is called with that token.\n\n**Folders**\n- **0 Setup**: a service (staff token) raises three consent requests: two for the farmer, one for another farmer.\n- **1 Bene API auth**: the login, plus replay checks (one-time code and `state` work once).\n- **2 Bene API with the bene token**: list, read, approve, revoke and deny the farmer's own requests and consents.\n- **3 Negative checks**: no token, staff token on farmer routes, another farmer's request, a farmer raising a request, a tampered token, an open redirect.\n\n**Needs** a Consent Manager with `beneApiAuth.enabled: true`, eSignet with the **mock identity system** (the collection plays the eSignet login page; a real ID system needs a browser), and a partner binding for `{{data_controller}}`. Each run raises new requests, so it can be run again. See `BENE-API-ESIGNET-AUTH.md`.\n\n**Run** (Postman CLI or newman; secrets are passed on the command line, never stored):\n\n```\npostman collection run postman/consent-manager-bene-api-esignet.postman_collection.json \\\n  -e postman/environments/local.postman_environment.json \\\n  --env-var staff_username=<staff user> --env-var staff_password=<password>\n```\n\nSee `postman/README.md` for the variables and for running against a deployed environment.",
+    "description": "Beneficiary (bene) API with **national-ID login through eSignet**, end to end and without a browser: the farmer logs in as an API client (login without `return_url` → eSignet OTP → callback answers a one-time code as JSON → bene API token), then every bene API route is called with that token.\n\n**Folders**\n- **0 Setup**: a service (staff token) raises three consent requests: two for the farmer, one for another farmer.\n- **1 Bene API auth**: the login, plus replay checks (one-time code and `state` work once).\n- **2 Bene API with the bene token**: list, read, approve, revoke and deny the farmer's own requests and consents.\n- **3 Negative checks**: no token, staff token on farmer routes, another farmer's request, a farmer raising a request, a tampered token, an open redirect.\n\n**Needs** a Consent Manager with `beneApiAuth.enabled: true`, eSignet with the **mock identity system** (the collection plays the eSignet login page; a real ID system needs a browser), and a partner binding for `{{data_controller}}`. Each run raises new requests, so it can be run again. See `BENE-API-ESIGNET-AUTH.md`.\n\n**Run** (Postman CLI or newman; secrets are passed on the command line, never stored):\n\n```\npostman collection run postman/consent-manager-bene-api-esignet.postman_collection.json \\\n  -e postman/consent-manager-bene-api-esignet.postman_environment.json \\\n  --env-var staff_username=<staff user> --env-var staff_password=<password>\n```\n\nSee `postman/README.md` for the variables and for running against a deployed environment.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -140,13 +140,13 @@
         "type": "text/javascript",
         "exec": [
           "pm.variables.set('now', new Date().toISOString());",
-          "// Every variable a run needs (postman/environments; secrets with --env-var).",
+          "// Every variable a run needs (the environment file next to this collection; secrets with --env-var).",
           "['bene_api_url', 'staff_api_url', 'esignet_api_url', 'keycloak_url', 'staff_realm', 'staff_client_id',",
           " 'staff_username', 'staff_password', 'partner_audience', 'data_controller', 'data_scope', 'purpose_code',",
           " 'subject_id_type', 'farmer_national_id', 'other_national_id', 'otp'].forEach(k => {",
           "  if (pm.variables.get(k)) return;",
           "  pm.execution.setNextRequest(null);  // stop the run",
-          "  throw new Error(`Variable '${k}' is not set: select an environment (postman/environments) or pass --env-var ${k}=...`);",
+          "  throw new Error(`Variable '${k}' is not set: select the environment 'Consent Manager - Bene API (eSignet login)' or pass --env-var ${k}=...`);",
           "});"
         ]
       }

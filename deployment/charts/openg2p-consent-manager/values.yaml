@@ -556,6 +556,72 @@ evidence:
     secretKeyKey: root-password
   maxBytes: 10485760
 
+# ── Beneficiary API auth with national ID (eSignet) ────────────────────────
+# Who may call the beneficiary API: the farmer logs in with their national ID
+# through eSignet and gets a token for the bene API (/my/*, their own consent
+# requests: list, grant, decline, withdraw). API clients log in without a page;
+# the console's farmer pages (/my/consents, /consent/<request id>) are one web
+# client of it. With it on, the bene API takes only this token on the farmer's
+# routes (a Keycloak token gets 403). When on:
+#   - the bene-api (extraApis, apiAudience beneficiary) is deployed, with the
+#     CM signing key (bene API tokens are signed with it) and the eSignet client
+#     key mounted;
+#   - the eSignet client of partnerPortal.subjectAuth (same client, key and
+#     bootstrap job) also gets the redirect URI below;
+#   - the console host routes /consent/v1/my/, /consent/v1/beneficiary/ and
+#     /consent/v1/consent-requests to the bene-api;
+#   - the console's config.json turns on farmer mode (beneficiaryAuth).
+# Needs eSignet in the namespace, as partnerPortal.subjectAuth. See
+# BENE-API-ESIGNET-AUTH.md at the repo root.
+beneApiAuth:
+  enabled: false
+  # eSignet sends the browser back here: the console host routes
+  # /consent/v1/beneficiary/ to the bene-api.
+  redirectUri: 'https://{{ tpl .Values.ui.hostname $ }}/consent/v1/beneficiary/auth/callback'
+  # Web pages the login may send the browser back to (prefixes). A login
+  # without return_url (API client) gets the one-time code as JSON.
+  allowedReturnUrls:
+    - 'https://{{ tpl .Values.ui.hostname $ }}/'
+  # Lifetime of the bene API token (CM-signed).
+  tokenTtlSeconds: 1800
+  # Lifetime of the one-time code the login hands back.
+  exchangeTtlSeconds: 120
+  # The ID type in the bene API token (requests are matched on the national
+  # ID across every type in partnerPortal.subjectAuth.idTypes).
+  subjectIdType: FAYDA_FAN
+
+# ── Consent login with national ID (eSignet) ───────────────────────────────
+# Separate from beneApiAuth: a consent request opened from its link
+# (https://<console host>/consent/<request id>) logs in with national ID for
+# that ONE request. The national ID must be the request's subject; the token
+# (CM-signed, consent-login+jwt) only reads, grants or declines that request,
+# not /my/*. When on:
+#   - the bene-api is deployed (as for beneApiAuth), with the CM signing key and
+#     the eSignet client key, and gets the CONSENT_MANAGER_CONSENT_LOGIN_* env;
+#   - the eSignet client of partnerPortal.subjectAuth also gets the redirect
+#     URI below;
+#   - the console host routes /consent/v1/consent-login/ (and the request
+#     routes) to the bene-api;
+#   - the console's config.json turns on consentLogin: /consent/<id> uses it.
+# Needs eSignet in the namespace, as partnerPortal.subjectAuth. See
+# BENE-API-ESIGNET-AUTH.md ("Consent login") at the repo root.
+consentLogin:
+  enabled: false
+  # eSignet sends the browser back here: the console host routes
+  # /consent/v1/consent-login/ to the bene-api.
+  redirectUri: 'https://{{ tpl .Values.ui.hostname $ }}/consent/v1/consent-login/callback'
+  # Web pages the login may send the browser back to (prefixes). A login
+  # without return_url (API client) gets the one-time code as JSON.
+  allowedReturnUrls:
+    - 'https://{{ tpl .Values.ui.hostname $ }}/'
+  # Lifetime of the consent login token (CM-signed, one request).
+  tokenTtlSeconds: 600
+  # Lifetime of the one-time code the login hands back.
+  exchangeTtlSeconds: 120
+  # The ID type in the consent login token (matched on the national ID across
+  # every type in partnerPortal.subjectAuth.idTypes).
+  subjectIdType: FAYDA_FAN
+
 # Additional API-audience deployments in THIS chart (same image, separate
 # Deployment/Service/VirtualService). Each entry is merged OVER consentManagerApi,
 # so it only needs to state its differences. This is how the one chart runs the
@@ -585,6 +651,8 @@ extraApis:
         enabled: false
   # BENEFICIARY api — /my/* + origination. Keycloak beneficiary realm. Scaffolded
   # but DISABLED — enable when you expose beneficiary self-service.
+  # beneApiAuth.enabled turns it on (with the signing key) for the
+  # farmer's national-ID login.
   - enabled: false
     nameOverride: bene-api
     apiAudience: beneficiary

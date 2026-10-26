@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { api } from "../api/client";
-import { getToken } from "../auth";
+import { getToken, hasBeneficiaryAuth, isConsentLogin, isFarmerMode } from "../auth";
 import { purposeLabel } from "./MyConsentsPage";
 import "./ConsentRequestPage.css";
 
@@ -38,7 +38,9 @@ export default function ConsentRequestPage() {
   const approve = useMutation({
     mutationFn: async () => {
       if (!data) return;
-      await api.authenticateConsentRequest(requestId, getToken());
+      // A farmer logged in with national ID (bene API auth or consent login):
+      // that login is the authentication.
+      if (!isFarmerMode()) await api.authenticateConsentRequest(requestId, getToken());
       if (data.grants) await api.approveConsentRequestGrants(requestId, approvedGrants);
       else await api.approveConsentRequest(requestId, data.requested_scopes);
     },
@@ -67,6 +69,17 @@ export default function ConsentRequestPage() {
             <p className="muted">
               You may now return to <strong>{data.partner_id}</strong>.
             </p>
+            {isFarmerMode() && !isConsentLogin() && (
+              <p>
+                <Link to="/my/consents">See all your consents</Link>
+              </p>
+            )}
+            {/* A consent login covers this request only: /my has its own login. */}
+            {isConsentLogin() && hasBeneficiaryAuth() && (
+              <p>
+                <a href="/my/consents">See all your consents</a>
+              </p>
+            )}
           </div>
         )}
 

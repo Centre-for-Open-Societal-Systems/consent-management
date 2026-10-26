@@ -92,8 +92,9 @@ class SubjectAuthService(BaseService):
         """The HTTP client for the provider (replaced in tests)."""
         return httpx.AsyncClient(timeout=_config.subject_auth_http_timeout_seconds)
 
-    async def metadata(self) -> dict:
-        """issuer and endpoints: the discovery document, overridden per value."""
+    async def metadata(self, redirect_uri: Optional[str] = None) -> dict:
+        """issuer and endpoints: the discovery document, overridden per value.
+        ``redirect_uri``: the callback the login uses (default: the partner portal's)."""
         if self._metadata is None or time.monotonic() - self._metadata_at > _METADATA_TTL:
             found: dict = {}
             if _config.subject_auth_discovery_url:
@@ -118,7 +119,8 @@ class SubjectAuthService(BaseService):
             self._metadata_at = time.monotonic()
         missing = [k for k, v in self._metadata.items() if not v and k != "userinfo_endpoint"]
         missing += [name for name, value in (("client_id", _config.subject_auth_client_id),
-                                             ("redirect_uri", _config.subject_auth_redirect_uri)) if not value]
+                                             ("redirect_uri", redirect_uri or _config.subject_auth_redirect_uri))
+                    if not value]
         if missing:
             raise LifecycleError(
                 503, f"national ID authentication is not configured (missing: {', '.join(missing)})"
@@ -152,8 +154,11 @@ class SubjectAuthService(BaseService):
         self._jwks[url] = (time.monotonic(), keys)
         return keys
 
-    async def _verify(self, token: str, meta: dict, audience: Optional[str]) -> dict:
-        """Signature (provider JWKS; one refetch on an unknown kid), iss, aud, exp."""
+    async def _verify(self, token: str, meta: dict, audience: Optional[str], id_token: bool = True) -> dict:
+        """Signature (provider JWKS; one refetch on an unknown kid), iss, aud, exp.
+        For a userinfo answer (``id_token=False``) iss and exp are not required
+        (OIDC Core 5.3.2; eSignet's has no exp and its iss is <issuer>/v1/esignet);
+        exp is still checked when present."""
         kid = jwt.get_unverified_header(token).get("kid")
         key = None
         for refresh in (False, True):
@@ -165,16 +170,17 @@ class SubjectAuthService(BaseService):
         if key is None:
             raise ValueError(f"no provider key with kid {kid!r}")
         return jwt.decode(
-            token, key.key, algorithms=_ID_TOKEN_ALGS, issuer=meta["issuer"],
-            audience=audience, options={"verify_aud": audience is not None, "require": ["exp", "iss"]},
+            token, key.key, algorithms=_ID_TOKEN_ALGS, issuer=meta["issuer"] if id_token else None,
+            audience=audience,
+            options={"verify_aud": audience is not None, "require": ["exp", "iss"] if id_token else []},
             leeway=30,
         )
 
     async def _userinfo_claims(self, token: str, meta: dict, client_id: str) -> dict:
         """Claims of a JWT userinfo answer (fetched from the provider over HTTPS).
 
-        Signature, iss and aud checked when the key is one the provider
-        publishes. Otherwise (eSignet: the identity system's signed answer, whose
+        Signature and aud (and exp if present) checked when the key is one the
+        provider publishes. Otherwise (eSignet: the identity system's signed answer, whose
         ``iss`` is that system's, e.g. https://<esignet>/v1/esignet, and which has
         no ``exp``) the HTTPS answer vouches for it; ``aud`` must still be this
         client, ``exp`` is checked if present, and the caller checks ``sub``."""
@@ -182,7 +188,8 @@ class SubjectAuthService(BaseService):
             kid = jwt.get_unverified_header(token).get("kid")
             keys = await self._jwk_set(meta["jwks_uri"])
             if kid is None or any(k.key_id == kid for k in keys.keys):
-                return await self._verify(token, meta, client_id if _aud_present(token) else None)
+                return await self._verify(token, meta, client_id if _aud_present(token) else None,
+                                          id_token=False)
             info = jwt.decode(token, options={"verify_signature": False})
         except Exception as exc:
             raise LifecycleError(401, f"the userinfo answer is not valid: {exc}") from exc
@@ -228,14 +235,21 @@ class SubjectAuthService(BaseService):
             session.add(row)
             await session.commit()
             await session.refresh(row)
+        return row, self.authorization_url(
+            meta, row.state, row.nonce, row.code_verifier, _config.subject_auth_redirect_uri
+        )
+
+    def authorization_url(self, meta: dict, state: str, nonce: str, code_verifier: str,
+                          redirect_uri: str) -> str:
+        """The provider's login URL for one login (also used by the beneficiary API auth)."""
         params = {
             "response_type": "code",
             "client_id": _config.subject_auth_client_id,
-            "redirect_uri": _config.subject_auth_redirect_uri,
+            "redirect_uri": redirect_uri,
             "scope": _config.subject_auth_scope,
-            "state": row.state,
-            "nonce": row.nonce,
-            "code_challenge": _challenge(row.code_verifier),
+            "state": state,
+            "nonce": nonce,
+            "code_challenge": _challenge(code_verifier),
             "code_challenge_method": "S256",
         }
         if _config.subject_auth_acr_values:
@@ -245,7 +259,7 @@ class SubjectAuthService(BaseService):
         if _config.subject_auth_ui_locales:
             params["ui_locales"] = _config.subject_auth_ui_locales
         sep = "&" if "?" in meta["authorization_endpoint"] else "?"
-        return row, f"{meta['authorization_endpoint']}{sep}{urlencode(params)}"
+        return f"{meta['authorization_endpoint']}{sep}{urlencode(params)}"
 
     # ── status ───────────────────────────────────────────────────────────────
 
@@ -389,8 +403,50 @@ class SubjectAuthService(BaseService):
         if req is None or req.status != RequestStatus.pending.value:
             raise LifecycleError(409, "the consent request is no longer open")
         meta = await self.metadata()
-        client_id = _config.subject_auth_client_id
+        merged, claims, id_token = await self.exchange_code(
+            meta, code, row.code_verifier, row.nonce, _config.subject_auth_redirect_uri
+        )
+        subject = self.subject_of(merged)
+        if _norm(subject) != _norm(req.subject_id_value):
+            raise LifecycleError(403, "the authenticated person is not the request's subject")
 
+        amr = merged.get("amr")
+        method = (amr[0] if isinstance(amr, list) and amr else amr) or merged.get("acr")
+        auth_time = merged.get("auth_time")
+        return AuthContext(
+            consent_request_id=req.id,
+            auth_provider=_config.subject_auth_provider_name,
+            auth_method=str(method)[:50] if method else None,
+            auth_timestamp=datetime.fromtimestamp(auth_time, timezone.utc)
+            if isinstance(auth_time, (int, float)) else _now(),
+            issuer=claims.get("iss"),
+            id_token_hash=hashlib.sha256(id_token.encode()).hexdigest(),
+            token_validated=True,
+            verified_claims=self.kept_claims(merged),
+        )
+
+    @staticmethod
+    def subject_of(merged: dict) -> str:
+        """The national ID in a login's claims (subject_auth_subject_claim)."""
+        subject = merged.get(_config.subject_auth_subject_claim)
+        if not subject:
+            raise LifecycleError(
+                401, f"the provider did not return '{_config.subject_auth_subject_claim}' (the national ID)"
+            )
+        return str(subject)
+
+    @staticmethod
+    def kept_claims(merged: dict) -> dict:
+        """What is stored of a login: acr / amr / auth_time + the configured claims."""
+        kept = {k: merged[k] for k in ("acr", "amr", "auth_time") if k in merged}
+        kept.update({k: merged[k] for k in _config.subject_auth_stored_claims if k in merged})
+        return kept
+
+    async def exchange_code(self, meta: dict, code: str, code_verifier: str, nonce: str,
+                            redirect_uri: str) -> tuple[dict, dict, str]:
+        """Code → tokens (private_key_jwt + PKCE), ID token and userinfo checked.
+        Returns (ID token + userinfo claims, ID token claims, the ID token)."""
+        client_id = _config.subject_auth_client_id
         now = int(time.time())
         assertion = jwt.encode(
             {"iss": client_id, "sub": client_id, "aud": meta["token_endpoint"], "jti": str(uuid.uuid4()),
@@ -402,11 +458,11 @@ class SubjectAuthService(BaseService):
             r = await client.post(meta["token_endpoint"], data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": _config.subject_auth_redirect_uri,
+                "redirect_uri": redirect_uri,
                 "client_id": client_id,
                 "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
                 "client_assertion": assertion,
-                "code_verifier": row.code_verifier,
+                "code_verifier": code_verifier,
             })
             if r.status_code != 200:
                 raise LifecycleError(502, f"the provider refused the code: HTTP {r.status_code} {r.text[:200]}")
@@ -418,7 +474,7 @@ class SubjectAuthService(BaseService):
                 claims = await self._verify(id_token, meta, client_id)
             except Exception as exc:
                 raise LifecycleError(401, f"the ID token is not valid: {exc}") from exc
-            if claims.get("nonce") != row.nonce:
+            if claims.get("nonce") != nonce:
                 raise LifecycleError(401, "the ID token's nonce does not match this login")
 
             info: dict = {}
@@ -434,31 +490,7 @@ class SubjectAuthService(BaseService):
                 if info.get("sub") and info["sub"] != claims.get("sub"):
                     raise LifecycleError(401, "the userinfo answer is for another person")
 
-        merged = {**claims, **info}
-        subject = merged.get(_config.subject_auth_subject_claim)
-        if not subject:
-            raise LifecycleError(
-                401, f"the provider did not return '{_config.subject_auth_subject_claim}' (the national ID)"
-            )
-        if _norm(subject) != _norm(req.subject_id_value):
-            raise LifecycleError(403, "the authenticated person is not the request's subject")
-
-        amr = merged.get("amr")
-        method = (amr[0] if isinstance(amr, list) and amr else amr) or merged.get("acr")
-        auth_time = merged.get("auth_time")
-        kept = {k: merged[k] for k in ("acr", "amr", "auth_time") if k in merged}
-        kept.update({k: merged[k] for k in _config.subject_auth_stored_claims if k in merged})
-        return AuthContext(
-            consent_request_id=req.id,
-            auth_provider=_config.subject_auth_provider_name,
-            auth_method=str(method)[:50] if method else None,
-            auth_timestamp=datetime.fromtimestamp(auth_time, timezone.utc)
-            if isinstance(auth_time, (int, float)) else _now(),
-            issuer=claims.get("iss"),
-            id_token_hash=hashlib.sha256(id_token.encode()).hexdigest(),
-            token_validated=True,
-            verified_claims=kept,
-        )
+        return {**claims, **info}, claims, id_token
 
 
 def _aud_present(token: str) -> bool:

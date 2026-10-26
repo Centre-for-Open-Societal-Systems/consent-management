@@ -70,7 +70,9 @@ class ConsentService(BaseService):
             if artefact is None:
                 return None
             if subject_claims is not None and (
-                artefact.subject_id_type != subject_claims.get("subject_id_type")
+                artefact.subject_id_type not in (
+                    subject_claims.get("subject_id_types") or [subject_claims.get("subject_id_type")]
+                )
                 or artefact.subject_id_value != subject_claims.get("subject_id_value")
             ):
                 raise PermissionError("not the subject of this consent")
@@ -116,10 +118,11 @@ class ConsentService(BaseService):
     async def list_subject_consents(
         self, subject_id_type: str, subject_id_value: str,
         status: Optional[str] = None, page: int = 1, size: int = 20,
+        id_types: Optional[list] = None,
     ) -> dict:
         async with async_session()() as session:
             base = select(ConsentArtefact).where(
-                ConsentArtefact.subject_id_type == subject_id_type,
+                ConsentArtefact.subject_id_type.in_(id_types or [subject_id_type]),
                 ConsentArtefact.subject_id_value == subject_id_value,
             )
             if status:
@@ -137,12 +140,13 @@ class ConsentService(BaseService):
             return {"items": rows, "total": total, "page": page, "size": size, "pages": pages}
 
     async def get_subject_artefact(
-        self, consent_id: str, subject_id_type: str, subject_id_value: str
+        self, consent_id: str, subject_id_type: str, subject_id_value: str,
+        id_types: Optional[list] = None,
     ) -> Optional[ConsentArtefact]:
         async with async_session()() as session:
             artefact = await session.get(ConsentArtefact, consent_id)
             if artefact is None or (
-                artefact.subject_id_type != subject_id_type
+                artefact.subject_id_type not in (id_types or [subject_id_type])
                 or artefact.subject_id_value != subject_id_value
             ):
                 return None

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { api } from "../api/client";
-import type { Artefact, Purpose } from "../api/types";
+import type { Artefact, ConsentRequest, Purpose } from "../api/types";
 
 export function purposeLabel(purpose: Purpose): string {
   return (
@@ -18,6 +19,12 @@ export default function MyConsentsPage() {
     queryFn: () => api.myConsents(),
   });
 
+  // Requests waiting for the subject's answer (answered on /consent/<id>).
+  const pending = useQuery({
+    queryKey: ["my-consent-requests"],
+    queryFn: () => api.myConsentRequests("pending"),
+  });
+
   const revoke = useMutation({
     mutationFn: (id: string) => api.revokeMyConsent(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["my-consents"] }),
@@ -30,6 +37,28 @@ export default function MyConsentsPage() {
         Every consent you have granted for sharing your data. You can withdraw an active consent
         at any time — sharing stops immediately and all parties are notified.
       </p>
+
+      {pending.data && pending.data.length > 0 && (
+        <>
+          <h3>Waiting for your answer</h3>
+          {pending.data.map((r: ConsentRequest) => (
+            <div className="card" key={r.id}>
+              <div className="spread">
+                <div>
+                  <h3 style={{ margin: 0 }}>{r.partner_id}</h3>
+                  <div className="muted">
+                    {purposeLabel(r.purpose)} · asked {formatDate(r.created_at)}
+                  </div>
+                </div>
+                <Link to={`/consent/${r.id}`} className="btn-primary">
+                  Review
+                </Link>
+              </div>
+            </div>
+          ))}
+          <h3 style={{ marginTop: 32 }}>Your consents</h3>
+        </>
+      )}
 
       {isLoading && <div className="loading">Loading…</div>}
       {error && <div className="notice notice-error">Could not load your consents.</div>}

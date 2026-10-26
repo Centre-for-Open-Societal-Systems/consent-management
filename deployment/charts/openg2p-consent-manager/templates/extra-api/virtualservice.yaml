@@ -1,5 +1,5 @@
 {{- range $api := .Values.extraApis }}
-{{- if $api.enabled }}
+{{- if include "consentManager.extraApiOn" (dict "api" $api "root" $) }}
 {{- $values := merge (deepCopy $api) (deepCopy $.Values.consentManagerApi) -}}
 {{- $context := dict "Values" (merge (deepCopy $values) (dict "global" $.Values.global)) "Chart" $.Chart "Release" $.Release "Files" $.Files "Capabilities" $.Capabilities -}}
 {{- with $context -}}

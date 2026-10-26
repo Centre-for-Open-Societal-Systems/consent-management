@@ -334,3 +334,48 @@ class Settings(BaseSettings):
     # How long a started login may take (the state's lifetime).
     subject_auth_session_ttl_seconds: int = 300
     subject_auth_http_timeout_seconds: float = 10.0
+
+    # ── Beneficiary API auth with national ID (eSignet) ──────────────────────
+    # Who may call the beneficiary API: the subject (farmer) logs in with the
+    # same provider and client as above (eSignet: authorization code + PKCE,
+    # private_key_jwt, the subject matched on subject_auth_subject_claim) and
+    # gets a short-lived token, signed with the CM signing key, for /my/* and
+    # their own consent requests. Not tied to a consent request. With it on, the
+    # beneficiary API (api_audience=beneficiary) takes only this token on the
+    # subject's routes (a Keycloak token gets 403); raising a request
+    # (POST /consent-requests) stays a service call.
+    bene_auth_enabled: bool = False
+    # The beneficiary API's callback, registered at the provider for the client,
+    # e.g. https://<bene API host>/consent/v1/beneficiary/auth/callback
+    bene_auth_redirect_uri: str = ""
+    # Web pages a login may return to (prefix match), e.g. https://<portal host>/.
+    # A login without return_url (API client) gets the one-time code as JSON.
+    bene_auth_allowed_return_urls: list[str] = []
+    bene_auth_token_issuer: str = "openg2p-consent-manager/beneficiary"
+    bene_auth_token_ttl_seconds: int = 1800
+    # The one-time code the callback hands back, swapped once for the token.
+    bene_auth_exchange_ttl_seconds: int = 120
+    # ID type shown for the logged-in subject; their requests and consents are
+    # matched on the national ID across every type in subject_auth_id_types.
+    bene_auth_subject_id_type: str = "FAYDA_FAN"
+
+    # ── Consent login with national ID (eSignet) ─────────────────────────────
+    # Separate from the beneficiary API auth above: the subject logs in for ONE
+    # consent request (e.g. from the request's link), with the same provider and
+    # client. The callback checks that the national ID is the request's subject;
+    # the token (signed with the CM signing key) is valid only to read, grant or
+    # decline that request — not /my/*, not other requests.
+    consent_login_enabled: bool = False
+    # The consent login callback, registered at the provider for the client,
+    # e.g. https://<bene API host>/consent/v1/consent-login/callback
+    consent_login_redirect_uri: str = ""
+    # Web pages a consent login may return to (prefix match). A login without
+    # return_url (API client) gets the one-time code as JSON.
+    consent_login_allowed_return_urls: list[str] = []
+    consent_login_token_issuer: str = "openg2p-consent-manager/consent-login"
+    consent_login_token_ttl_seconds: int = 600
+    # The one-time code the callback hands back, swapped once for the token.
+    consent_login_exchange_ttl_seconds: int = 120
+    # ID type shown for the logged-in subject (matched on the national ID across
+    # every type in subject_auth_id_types).
+    consent_login_subject_id_type: str = "FAYDA_FAN"

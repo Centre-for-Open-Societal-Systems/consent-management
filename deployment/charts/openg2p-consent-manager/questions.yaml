@@ -266,6 +266,18 @@ questions:
   label: Require National-ID Login (eSignet)
   group: Partner portal
   show_if: partnerPortal.enabled=true&&global.agriStackExchange.role!=exchange
+- variable: beneApiAuth.enabled
+  description: "Beneficiary API auth: farmers (and API clients for them) log in to the beneficiary api with their national ID through eSignet and list, grant, decline or withdraw their own consents; the console farmer pages (/my/consents) use it. The beneficiary api then takes only this login on the farmer routes. Deploys the beneficiary api and registers its callback in the eSignet client (the same client and job as the National-ID Login above). Needs eSignet in the namespace."
+  type: boolean
+  default: false
+  label: Beneficiary API Auth with National ID (eSignet)
+  group: Beneficiary API auth
+- variable: consentLogin.enabled
+  description: "Consent login: a consent request opened from its link (/consent/<request id>) logs in with national ID through eSignet for that one request only (the national ID must be the request's subject), then grants or declines it. Separate from the Beneficiary API auth. Deploys the beneficiary api and registers its callback in the same eSignet client. Needs eSignet in the namespace."
+  type: boolean
+  default: false
+  label: Consent Login with National ID (eSignet)
+  group: Consent login
 - variable: partnerPortal.requiredSubjectIdentifiers
   description: "Comma-separated identifiers every request must carry besides the subject ID, checked by staff in the registry before approving. Empty = none; for the exchange role, FARMER_ID."
   type: string

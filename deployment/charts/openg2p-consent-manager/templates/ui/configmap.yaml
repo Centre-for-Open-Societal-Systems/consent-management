@@ -21,6 +21,12 @@ data:
       },
       "adminRole":    {{ tpl .Values.global.consentManagerAdminRole $ | quote }},
       "approverRole": {{ tpl .Values.global.consentManagerApproverRole $ | quote }}
+      {{- if include "consentManager.beneAuthOn" $ }},
+      "beneficiaryAuth": { "enabled": true }
+      {{- end }}
+      {{- if include "consentManager.consentLoginOn" $ }},
+      "consentLogin": { "enabled": true }
+      {{- end }}
     }
 {{- end -}}
 {{- end }}

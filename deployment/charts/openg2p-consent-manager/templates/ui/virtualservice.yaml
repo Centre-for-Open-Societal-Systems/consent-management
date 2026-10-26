@@ -3,8 +3,13 @@ Single VirtualService for the staff host — serves the admin console SPA and it
 API on one origin (no CORS). Two ordered routes (Istio matches in declaration
 order, so the more-specific API prefix must come first):
 
-  1. /consent/  → staff API Service   (the console's admin/approvals/decisions)
+  1. /consent/v1/ → staff API Service (the console's admin/approvals/decisions;
+                    not /consent/<id>, which is a UI page)
   2. /          → UI Service          (the SPA, catch-all)
+
+With beneApiAuth.enabled and/or consentLogin.enabled, a first route sends the
+farmer's paths (/consent/v1/my/, /consent/v1/beneficiary/, /consent/v1/consent-login/,
+/consent/v1/consent-requests) to the beneficiary API.
 
 Because this VS owns the staff host, the staff API's own VirtualService is
 suppressed while the UI is enabled (see templates/api/virtualservice.yaml).
@@ -29,11 +34,41 @@ spec:
   gateways:
     - {{ $gateway }}
   http:
-    # ----- Staff API: /consent/* (served at the app root, no rewrite) -----
+    {{- if include "consentManager.nationalIdLoginOn" . }}
+    {{- range $api := .Values.extraApis }}
+    {{- if eq (toString $api.apiAudience) "beneficiary" }}
+    {{- $beneValues := merge (deepCopy $api) (deepCopy $.Values.consentManagerApi) }}
+    {{- $beneCtx := dict "Values" (merge (deepCopy $beneValues) (dict "global" $.Values.global)) "Chart" $.Chart "Release" $.Release "Files" $.Files "Capabilities" $.Capabilities }}
+    # ----- Beneficiary API: its national-ID logins (beneApiAuth, consentLogin)
+    # and the farmer's requests and consents. Before the staff route. -----
+    - name: bene-api
+      match:
+        - uri:
+            prefix: /consent/v1/my/
+        - uri:
+            prefix: /consent/v1/beneficiary/
+        - uri:
+            prefix: /consent/v1/consent-login/
+        - uri:
+            prefix: /consent/v1/consent-requests
+      headers:
+        request:
+          set:
+            x-forwarded-host: {{ $host | quote }}
+            x-forwarded-proto: https
+      route:
+        - destination:
+            host: {{ include "common.names.fullname" $beneCtx }}
+            port:
+              number: {{ $beneValues.service.port }}
+    {{- end }}
+    {{- end }}
+    {{- end }}
+    # ----- Staff API: /consent/v1/* (served at the app root, no rewrite) -----
     - name: staff-api
       match:
         - uri:
-            prefix: /consent/
+            prefix: /consent/v1/
       headers:
         request:
           set:

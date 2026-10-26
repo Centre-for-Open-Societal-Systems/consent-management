@@ -31,6 +31,12 @@ class CallerIdentity:
     roles: List[str] = field(default_factory=list)
     is_service_account: bool = False
     raw_claims: dict = field(default_factory=dict)
+    # A subject logged in to the beneficiary API with national ID (beneficiary
+    # API auth token): may act only on their own requests and consents.
+    is_subject: bool = False
+    # A consent login (national ID) for ONE consent request: the request id;
+    # the identity may only read, grant or decline that request.
+    consent_request_id: Optional[str] = None
 
 
 def _get_jwk_client() -> jwt.PyJWKClient:
@@ -107,7 +113,14 @@ def _identity_from_claims(claims: dict) -> CallerIdentity:
 async def current_identity(
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> CallerIdentity:
-    """Require a valid Keycloak bearer token; return the caller's identity."""
+    """Require a valid Keycloak bearer token; return the caller's identity.
+    A beneficiary API auth token or a consent login token (national ID) is
+    accepted too, checked with the CM signing key, also when Keycloak auth is
+    off."""
+    if authorization and authorization.startswith("Bearer "):
+        subject = _subject_identity(authorization[len("Bearer ") :])
+        if subject is not None:
+            return subject
     if not _config.auth_enabled:
         # Dev convenience — synthesise an admin-ish identity.
         return CallerIdentity(
@@ -127,12 +140,78 @@ async def current_identity(
     return _identity_from_claims(claims)
 
 
+def _subject_identity(token: str) -> Optional[CallerIdentity]:
+    """The subject of a beneficiary API auth token or a consent login token;
+    None when it is neither."""
+    from .services import BeneAuthService, ConsentLoginService  # services import this module's config only
+
+    if BeneAuthService.is_bene_token(token):
+        service = BeneAuthService.get_component()
+    elif ConsentLoginService.is_consent_login_token(token):
+        service = ConsentLoginService.get_component()
+    else:
+        return None
+    try:
+        claims = service.verify(token)
+    except jwt.PyJWTError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid or expired token: {exc}"
+        )
+    return CallerIdentity(
+        subject=claims["sub"],
+        subject_id_type=claims.get("subject_id_type") or _config.bene_auth_subject_id_type,
+        subject_id_value=claims["subject_id_value"],
+        name=claims.get("name"),
+        roles=[], is_service_account=False, raw_claims=claims, is_subject=True,
+        consent_request_id=claims.get("crid"),
+    )
+
+
+def bene_auth_only() -> bool:
+    """The beneficiary API with beneficiary API auth or consent login on: the
+    subject's routes take only a national-ID login token (eSignet), no
+    Keycloak token."""
+    return (
+        bool(_config.bene_auth_enabled or _config.consent_login_enabled)
+        and _config.api_audience == "beneficiary"
+    )
+
+
+def check_bene_login(identity: CallerIdentity) -> None:
+    """403 for a non-subject token on a subject route when bene_auth_only()."""
+    if bene_auth_only() and not identity.is_subject:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="beneficiary API login (national ID) required",
+        )
+
+
+def check_not_consent_login(identity: CallerIdentity) -> None:
+    """403 for a consent login token outside its own consent request (/my/*,
+    revoke, /beneficiary/auth/me)."""
+    if identity.consent_request_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="a consent login is only valid for its own consent request",
+        )
+
+
+def subject_id_types(identity: CallerIdentity) -> List[str]:
+    """ID types the caller's subject ID counts for: every national-ID type for a
+    beneficiary API login (the same number), else the token's own type."""
+    if identity.is_subject:
+        return list(dict.fromkeys([identity.subject_id_type, *_config.subject_auth_id_types]))
+    return [identity.subject_id_type]
+
+
 def require_role(role: str):
     """Dependency factory — gate an endpoint on a single Keycloak role."""
 
     async def _checker(
         identity: CallerIdentity = Depends(current_identity),
     ) -> CallerIdentity:
+        if identity.is_subject:  # a beneficiary API login holds no staff role
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Role '{role}' required")
         if not _config.auth_enabled:
             return identity
         if role not in identity.roles:
@@ -148,6 +227,8 @@ async def get_current_subject(
     identity: CallerIdentity = Depends(current_identity),
 ) -> Dict[str, str]:
     """Subject identity for the ``/my/*`` endpoints, scoped to the caller."""
+    check_bene_login(identity)
+    check_not_consent_login(identity)
     if not identity.subject_id_value:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -156,6 +237,7 @@ async def get_current_subject(
     return {
         "subject_id_type": identity.subject_id_type,
         "subject_id_value": identity.subject_id_value,
+        "subject_id_types": subject_id_types(identity),
     }
 
 
@@ -165,6 +247,11 @@ def require_any_role(*roles: str):
     async def _checker(
         identity: CallerIdentity = Depends(current_identity),
     ) -> CallerIdentity:
+        if identity.is_subject:  # a beneficiary API login holds no staff role
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"One of roles {sorted(roles)} required",
+            )
         if not _config.auth_enabled:
             return identity
         if not set(roles) & set(identity.roles):

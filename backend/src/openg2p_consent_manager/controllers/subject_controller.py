@@ -9,8 +9,13 @@ from openg2p_fastapi_common.controller import BaseController
 from ..auth import get_current_subject
 from ..config import Settings
 from ..schemas.common import Paginated
-from ..schemas.lifecycle import ArtefactResponse, RevokeRequest, RevokeResponse
-from ..services import ConsentService
+from ..schemas.lifecycle import (
+    ArtefactResponse,
+    ConsentRequestResponse,
+    RevokeRequest,
+    RevokeResponse,
+)
+from ..services import BeneConsentService, ConsentService
 
 _config = Settings.get_config()
 _logger = logging.getLogger(_config.logging_default_logger_name)
@@ -28,6 +33,7 @@ class SubjectController(BaseController):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.consents = ConsentService.get_component()
+        self.bene_consents = BeneConsentService.get_component()
         self.router.prefix += "/consent/v1/my"
         self.router.tags += ["Subject (GDPR)"]
 
@@ -46,6 +52,29 @@ class SubjectController(BaseController):
             "/consents/{consent_id}/revoke", self.revoke_my_consent,
             responses={200: {"model": RevokeResponse}}, methods=["POST"],
         )
+        # The requests the subject answers themselves (approve / deny at
+        # /consent/v1/consent-requests/{id}/…).
+        self.router.add_api_route(
+            "/consent-requests", self.list_my_requests,
+            responses={200: {"model": Paginated[ConsentRequestResponse]}}, methods=["GET"],
+        )
+
+    async def list_my_requests(
+        self,
+        subject: Dict[str, str] = Depends(get_current_subject),
+        status: Optional[str] = Query(None),
+        page: int = Query(1, ge=1),
+        size: int = Query(20, ge=1, le=100),
+    ) -> Paginated[ConsentRequestResponse]:
+        result = await self.bene_consents.list_requests(
+            subject["subject_id_value"], subject["subject_id_types"],
+            status=status, page=page, size=size,
+        )
+        return Paginated[ConsentRequestResponse](
+            items=[ConsentRequestResponse.model_validate(r) for r in result["items"]],
+            total=result["total"], page=result["page"],
+            size=result["size"], pages=result["pages"],
+        )
 
     async def list_my_consents(
         self,
@@ -56,7 +85,7 @@ class SubjectController(BaseController):
     ) -> Paginated[ArtefactResponse]:
         result = await self.consents.list_subject_consents(
             subject["subject_id_type"], subject["subject_id_value"],
-            status=status, page=page, size=size,
+            status=status, page=page, size=size, id_types=subject["subject_id_types"],
         )
         return Paginated[ArtefactResponse](
             items=[_artefact_response(a) for a in result["items"]],
@@ -69,7 +98,8 @@ class SubjectController(BaseController):
         subject: Dict[str, str] = Depends(get_current_subject),
     ):
         artefact = await self.consents.get_subject_artefact(
-            consent_id, subject["subject_id_type"], subject["subject_id_value"]
+            consent_id, subject["subject_id_type"], subject["subject_id_value"],
+            id_types=subject["subject_id_types"],
         )
         if artefact is None:
             return JSONResponse(status_code=404, content={"error": "not_found"})
@@ -84,7 +114,8 @@ class SubjectController(BaseController):
             return JSONResponse(status_code=404, content={"error": "not_found"})
         # Ensure the receipt belongs to the authenticated subject.
         artefact = await self.consents.get_subject_artefact(
-            receipt.consent_id, subject["subject_id_type"], subject["subject_id_value"]
+            receipt.consent_id, subject["subject_id_type"], subject["subject_id_value"],
+            id_types=subject["subject_id_types"],
         )
         if artefact is None:
             return JSONResponse(status_code=403, content={"error": "forbidden"})

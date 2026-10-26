@@ -1,6 +1,8 @@
 from .audit import AuditLog, DecisionLog
 from .awe import AweProcessedEvent
 from .base import BaseORMModelWithId, utcnow
+from .bene_login import BeneLoginSession
+from .consent_login import ConsentLoginSession
 from .consent import (
     ArtefactSource,
     ArtefactStatus,
@@ -44,6 +46,8 @@ __all__ = [
     "AuthContext",
     "SubjectAuthSession",
     "SubjectAuthStatus",
+    "BeneLoginSession",
+    "ConsentLoginSession",
     "ConsentArtefact",
     "ArtefactStatus",
     "ArtefactSource",

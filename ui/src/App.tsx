@@ -9,8 +9,22 @@ import VerificationDetailPage from "./pages/VerificationDetailPage";
 import DecisionsPage from "./pages/DecisionsPage";
 import MyConsentsPage from "./pages/MyConsentsPage";
 import ConsentRequestPage from "./pages/ConsentRequestPage";
+import FarmerLayout from "./components/FarmerLayout";
+import { isFarmerMode } from "./auth";
 
 export default function App() {
+  // Farmer pages with national-ID login (beneficiaryAuth on): no console.
+  if (isFarmerMode()) {
+    return (
+      <Routes>
+        <Route element={<FarmerLayout />}>
+          <Route path="/consent/:requestId" element={<ConsentRequestPage />} />
+          <Route path="/my/consents" element={<MyConsentsPage />} />
+          <Route path="*" element={<Navigate to="/my/consents" replace />} />
+        </Route>
+      </Routes>
+    );
+  }
   return (
     <Routes>
       {/* Subject consent-giving screen — standalone, no admin chrome. */}

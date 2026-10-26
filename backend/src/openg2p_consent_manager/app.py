@@ -10,6 +10,8 @@ from openg2p_fastapi_common.app import Initializer as BaseInitializer
 
 from .controllers import (
     AweController,
+    BeneAuthController,
+    ConsentLoginController,
     ConsentVerificationController,
     DecisionsController,
     LifecycleController,
@@ -24,8 +26,10 @@ from .models import (
     AuditLog,
     AuthContext,
     AweProcessedEvent,
+    BeneLoginSession,
     ConsentArtefact,
     ConsentEvidence,
+    ConsentLoginSession,
     ConsentReceipt,
     ConsentRequest,
     DecisionLog,
@@ -39,6 +43,9 @@ from .services import (
     AssistedConsentService,
     AweClient,
     AweWebhookService,
+    BeneAuthService,
+    BeneConsentService,
+    ConsentLoginService,
     ConsentRecordService,
     ConsentService,
     CryptoService,
@@ -74,6 +81,9 @@ class Initializer(BaseInitializer):
         LifecycleService()
         EvidenceService()
         SubjectAuthService()
+        BeneAuthService()  # depends on SubjectAuthService, CryptoService
+        BeneConsentService()
+        ConsentLoginService()  # depends on SubjectAuth, Crypto, Lifecycle, BeneConsent
         AssistedConsentService()
         ConsentRecordService()  # depends on AssistedConsentService, CryptoService  # depends on Lifecycle/Evidence/Receipt
         OtpService()
@@ -107,9 +117,14 @@ class Initializer(BaseInitializer):
             ConsentVerificationController().post_init()
             PartnerPortalController().post_init()
         if beneficiary:
-            # BENEFICIARY api — Keycloak beneficiary realm. /my/* + origination.
+            # BENEFICIARY api — /my/* + origination. Keycloak beneficiary realm,
+            # or with bene_auth_enabled only its own national-ID (eSignet) auth.
             SubjectController().post_init()
             LifecycleController().post_init()
+            BeneAuthController().post_init()
+            # Consent login (national ID) for one consent request: separate
+            # from the beneficiary API auth above.
+            ConsentLoginController().post_init()
 
     def migrate_database(self, args):
         super().migrate_database(args)
@@ -123,6 +138,8 @@ class Initializer(BaseInitializer):
                 ConsentEvidence,
                 AuthContext,
                 SubjectAuthSession,
+                BeneLoginSession,
+                ConsentLoginSession,
                 ConsentArtefact,
                 ConsentReceipt,
                 RevocationRecord,

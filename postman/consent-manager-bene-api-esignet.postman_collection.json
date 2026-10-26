@@ -1,0 +1,1266 @@
+{
+  "info": {
+    "_postman_id": "3d6a13f7-363a-5c3d-957d-d2890de448f6",
+    "name": "Consent Manager - Bene API (eSignet login)",
+    "description": "Beneficiary (bene) API with **national-ID login through eSignet**, end to end and without a browser: the farmer logs in as an API client (login without `return_url` → eSignet OTP → callback answers a one-time code as JSON → bene API token), then every bene API route is called with that token.\n\n**Folders**\n- **0 Setup**: a service (staff token) raises three consent requests: two for the farmer, one for another farmer.\n- **1 Bene API auth**: the login, plus replay checks (one-time code and `state` work once).\n- **2 Bene API with the bene token**: list, read, approve, revoke and deny the farmer's own requests and consents.\n- **3 Negative checks**: no token, staff token on farmer routes, another farmer's request, a farmer raising a request, a tampered token, an open redirect.\n\n**Needs** a Consent Manager with `beneApiAuth.enabled: true`, eSignet with the **mock identity system** (the collection plays the eSignet login page; a real ID system needs a browser), and a partner binding for `{{data_controller}}`. Each run raises new requests, so it can be run again. See `BENE-API-ESIGNET-AUTH.md`.\n\n**Run** (Postman CLI or newman; secrets are passed on the command line, never stored):\n\n```\npostman collection run postman/consent-manager-bene-api-esignet.postman_collection.json \\\n  -e postman/environments/local.postman_environment.json \\\n  --env-var staff_username=<staff user> --env-var staff_password=<password>\n```\n\nSee `postman/README.md` for the variables and for running against a deployed environment.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "auth_code",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "auth_state",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "bene_token",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "binding_id",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "consent_id",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "login_code",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "oauth_hash",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "q_acr_values",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "q_claims",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "q_client_id",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "q_code_challenge",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "q_nonce",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "q_redirect_uri",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "q_scope",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "q_state",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "rid_approve",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "rid_deny",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "rid_other",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "staff_token",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "txn",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "xsrf",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.variables.set('now', new Date().toISOString());",
+          "// Every variable a run needs (postman/environments; secrets with --env-var).",
+          "['bene_api_url', 'staff_api_url', 'esignet_api_url', 'keycloak_url', 'staff_realm', 'staff_client_id',",
+          " 'staff_username', 'staff_password', 'partner_audience', 'data_controller', 'data_scope', 'purpose_code',",
+          " 'subject_id_type', 'farmer_national_id', 'other_national_id', 'otp'].forEach(k => {",
+          "  if (pm.variables.get(k)) return;",
+          "  pm.execution.setNextRequest(null);  // stop the run",
+          "  throw new Error(`Variable '${k}' is not set: select an environment (postman/environments) or pass --env-var ${k}=...`);",
+          "});"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test('no server error', () => pm.expect(pm.response.code, pm.response.text()).to.be.below(500));"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "0 Setup (service raises requests)",
+      "item": [
+        {
+          "name": "0a Staff token (Keycloak staff realm)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('staff token', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('staff_token', pm.response.json().access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{keycloak_url}}/realms/{{staff_realm}}/protocol/openid-connect/token",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password"
+                },
+                {
+                  "key": "client_id",
+                  "value": "{{staff_client_id}}"
+                },
+                {
+                  "key": "username",
+                  "value": "{{staff_username}}"
+                },
+                {
+                  "key": "password",
+                  "value": "{{staff_password}}"
+                }
+              ]
+            },
+            "description": "Gets a staff access token from Keycloak (password grant). Setup only: a service raises the consent requests the farmer then answers."
+          }
+        },
+        {
+          "name": "0b Find the partner binding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json().find(x => x.controller_id === pm.variables.get('data_controller'));",
+                  "pm.test('binding found', () => pm.expect(b).to.be.an('object'));",
+                  "pm.collectionVariables.set('binding_id', b.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              }
+            ],
+            "url": "{{staff_api_url}}/partners?audience={{partner_audience}}",
+            "description": "Finds the partner's binding for `{{data_controller}}`; its ID is the `partner_id` of the requests raised next."
+          }
+        },
+        {
+          "name": "0c Raise request for the farmer (to approve)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('raised 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('rid_approve', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{bene_api_url}}/consent-requests",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"subject_id\": {\"type\": \"{{subject_id_type}}\", \"value\": \"{{farmer_national_id}}\"}, \"partner_id\": \"{{binding_id}}\", \"purpose\": {\"code\": \"{{purpose_code}}\"}, \"grants\": [{\"data_controller\": \"{{data_controller}}\", \"data_scopes\": [\"{{data_scope}}\"]}]}"
+            },
+            "description": "Raises a consent request for `{{farmer_national_id}}` as a service (staff token). This is the only non-farmer call on the bene API."
+          }
+        },
+        {
+          "name": "0d Raise request for the farmer (to deny)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('raised 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('rid_deny', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{bene_api_url}}/consent-requests",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"subject_id\": {\"type\": \"{{subject_id_type}}\", \"value\": \"{{farmer_national_id}}\"}, \"partner_id\": \"{{binding_id}}\", \"purpose\": {\"code\": \"{{purpose_code}}\"}, \"grants\": [{\"data_controller\": \"{{data_controller}}\", \"data_scopes\": [\"{{data_scope}}\"]}]}"
+            },
+            "description": "Raises a consent request for `{{farmer_national_id}}` as a service (staff token). This is the only non-farmer call on the bene API."
+          }
+        },
+        {
+          "name": "0e Raise request for another farmer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('raised 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('rid_other', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{bene_api_url}}/consent-requests",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"subject_id\": {\"type\": \"{{subject_id_type}}\", \"value\": \"{{other_national_id}}\"}, \"partner_id\": \"{{binding_id}}\", \"purpose\": {\"code\": \"{{purpose_code}}\"}, \"grants\": [{\"data_controller\": \"{{data_controller}}\", \"data_scopes\": [\"{{data_scope}}\"]}]}"
+            },
+            "description": "Raises a consent request for `{{other_national_id}}` (staff token), used to check that a farmer cannot see or answer someone else's request."
+          }
+        }
+      ],
+      "description": "Setup: a service (staff token) raises the consent requests used below."
+    },
+    {
+      "name": "1 Bene API auth (eSignet login, API client)",
+      "item": [
+        {
+          "name": "1a Auth config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('bene API auth enabled', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().enabled).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/beneficiary/auth/config",
+            "description": "Public: tells a client whether the national-ID login is on and which provider it uses."
+          }
+        },
+        {
+          "name": "1b Login (no return_url) -> 302 to eSignet",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const loc = pm.response.headers.get('Location') || '';",
+                  "pm.test('302 to eSignet /authorize', () => { pm.response.to.have.status(302); pm.expect(loc).to.include('/authorize?'); });",
+                  "const q = {};",
+                  "loc.split('?')[1].split('&').forEach(p => { const i = p.indexOf('='); q[p.slice(0, i)] = decodeURIComponent(p.slice(i + 1).replace(/\\+/g, ' ')); });",
+                  "pm.test('PKCE S256 + state + nonce', () => { pm.expect(q.code_challenge_method).to.eql('S256'); pm.expect(q.state).to.be.ok; pm.expect(q.nonce).to.be.ok; });",
+                  "['client_id', 'redirect_uri', 'scope', 'state', 'nonce', 'code_challenge', 'acr_values', 'claims'].forEach(k => pm.collectionVariables.set('q_' + k, q[k] || ''));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/beneficiary/auth/login",
+            "description": "Starts the login as an **API client** (no `return_url`). The bene API answers `302` to eSignet `/authorize` with PKCE (S256), `state` and `nonce`; the test keeps the query for the eSignet calls."
+          }
+        },
+        {
+          "name": "1c eSignet CSRF token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('csrf token', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('xsrf', pm.response.json().token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{esignet_api_url}}/csrf/token",
+            "description": "eSignet: CSRF token for the next calls.\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "1d eSignet oauth-details",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('oauth-details ok', () => { pm.response.to.have.status(200); pm.expect(body.errors || []).to.be.empty; });",
+                  "pm.collectionVariables.set('txn', body.response.transactionId);",
+                  "const hash = CryptoJS.SHA256(JSON.stringify(body.response)).toString(CryptoJS.enc.Base64).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');",
+                  "pm.collectionVariables.set('oauth_hash', hash);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{esignet_api_url}}/authorization/v3/oauth-details",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requestTime\": \"{{now}}\", \"request\": {\"clientId\": \"{{q_client_id}}\", \"scope\": \"{{q_scope}}\", \"responseType\": \"code\", \"redirectUri\": \"{{q_redirect_uri}}\", \"display\": \"popup\", \"prompt\": \"login\", \"acrValues\": \"{{q_acr_values}}\", \"nonce\": \"{{q_nonce}}\", \"state\": \"{{q_state}}\", \"claimsLocales\": \"en\", \"uiLocales\": \"en\", \"claims\": {{q_claims}}, \"codeChallenge\": \"{{q_code_challenge}}\", \"codeChallengeMethod\": \"S256\"}}"
+            },
+            "description": "eSignet: opens the login transaction for the authorize request (client, redirect URI, claims, PKCE).\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "1e eSignet send OTP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OTP sent', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().errors || []).to.be.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "oauth-details-key",
+                "value": "{{txn}}"
+              },
+              {
+                "key": "oauth-details-hash",
+                "value": "{{oauth_hash}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{esignet_api_url}}/authorization/send-otp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requestTime\": \"{{now}}\", \"request\": {\"transactionId\": \"{{txn}}\", \"individualId\": \"{{farmer_national_id}}\", \"otpChannels\": [\"phone\"], \"captchaToken\": \"x\"}}"
+            },
+            "description": "eSignet: sends the OTP to the farmer's phone.\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "1f eSignet authenticate (OTP)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('authenticated', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().errors || []).to.be.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "oauth-details-key",
+                "value": "{{txn}}"
+              },
+              {
+                "key": "oauth-details-hash",
+                "value": "{{oauth_hash}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{esignet_api_url}}/authorization/v3/authenticate",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requestTime\": \"{{now}}\", \"request\": {\"transactionId\": \"{{txn}}\", \"individualId\": \"{{farmer_national_id}}\", \"challengeList\": [{\"authFactorType\": \"OTP\", \"challenge\": \"{{otp}}\", \"format\": \"alpha-numeric\"}]}}"
+            },
+            "description": "eSignet: checks the OTP.\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "1g eSignet auth-code (consent to share claims)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('auth code issued', () => { pm.response.to.have.status(200); pm.expect(body.errors || []).to.be.empty; pm.expect(body.response.code).to.be.ok; });",
+                  "pm.collectionVariables.set('auth_code', body.response.code);",
+                  "pm.collectionVariables.set('auth_state', body.response.state);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "oauth-details-key",
+                "value": "{{txn}}"
+              },
+              {
+                "key": "oauth-details-hash",
+                "value": "{{oauth_hash}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{esignet_api_url}}/authorization/auth-code",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requestTime\": \"{{now}}\", \"request\": {\"transactionId\": \"{{txn}}\", \"acceptedClaims\": [\"individual_id\", \"name\"], \"permittedAuthorizeScopes\": []}}"
+            },
+            "description": "eSignet: the farmer accepts sharing `individual_id` and `name`; eSignet issues the authorization code for the redirect URI.\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "1h Bene API callback -> one-time code (JSON)",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 JSON code (API client, no redirect)', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().code).to.be.ok; });",
+                  "pm.collectionVariables.set('login_code', pm.response.json().code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/beneficiary/auth/callback?state={{auth_state}}&code={{auth_code}}",
+            "description": "The redirect URI eSignet sends the browser to. The CM exchanges the code with eSignet (`private_key_jwt`), checks the ID token and userinfo, and answers an API client with a one-time code (JSON, valid 120 s)."
+          }
+        },
+        {
+          "name": "1i Token (one-time code -> bene API token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.response.json();",
+                  "pm.test('bene API token for the FIN', () => { pm.response.to.have.status(200); pm.expect(t.subject_id.value).to.eql(pm.variables.get('farmer_national_id')); pm.expect(t.token_type).to.eql('Bearer'); });",
+                  "pm.collectionVariables.set('bene_token', t.access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{bene_api_url}}/beneficiary/auth/token",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"{{login_code}}\"}"
+            },
+            "description": "Exchanges the one-time code for the **bene API token** (CM-signed, `typ: bene+jwt`, 30 min)."
+          }
+        },
+        {
+          "name": "1j Token again with the same code -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code works once', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{bene_api_url}}/beneficiary/auth/token",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"{{login_code}}\"}"
+            },
+            "description": "A one-time code works once: the second exchange is refused (`400`)."
+          }
+        },
+        {
+          "name": "1k Callback again with the same state -> 400",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('state works once', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/beneficiary/auth/callback?state={{auth_state}}&code={{auth_code}}",
+            "description": "Replaying the same `state` is refused (`400`)."
+          }
+        },
+        {
+          "name": "1l Me",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const me = pm.response.json();",
+                  "pm.test('me = the FIN from eSignet', () => { pm.response.to.have.status(200); pm.expect(me.subject_id.value).to.eql(pm.variables.get('farmer_national_id')); pm.expect(me.provider).to.be.ok; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              }
+            ],
+            "url": "{{bene_api_url}}/beneficiary/auth/me",
+            "description": "Who the token belongs to: the national ID from eSignet."
+          }
+        }
+      ],
+      "description": "Login with national ID as an API client, and replay checks."
+    },
+    {
+      "name": "2 Bene API with the bene token",
+      "item": [
+        {
+          "name": "2a My pending requests",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const ids = pm.response.json().items.map(r => r.id);",
+                  "pm.test('own requests listed, other farmer not', () => { pm.response.to.have.status(200); pm.expect(ids).to.include(pm.collectionVariables.get('rid_approve')); pm.expect(ids).to.include(pm.collectionVariables.get('rid_deny')); pm.expect(ids).to.not.include(pm.collectionVariables.get('rid_other')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              }
+            ],
+            "url": "{{bene_api_url}}/my/consent-requests?status=pending",
+            "description": "The farmer's pending requests: their own are listed, the other farmer's are not."
+          }
+        },
+        {
+          "name": "2b Get own request",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('pending, own request', () => { pm.response.to.have.status(200); pm.expect(r.status).to.eql('pending'); pm.expect(r.id).to.eql(pm.collectionVariables.get('rid_approve')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              }
+            ],
+            "url": "{{bene_api_url}}/consent-requests/{{rid_approve}}",
+            "description": "Reads one of the farmer's own requests."
+          }
+        },
+        {
+          "name": "2c Approve own request -> consent",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const a = pm.response.json();",
+                  "pm.test('consent created (201)', () => pm.response.to.have.status(201));",
+                  "pm.test('assurance: self_service, subject authenticated by eSignet', () => { pm.expect(a.assurance.method).to.eql('self_service'); pm.expect(a.assurance.subject_authenticated).to.eql(true); pm.expect(a.assurance.subject_authentication.provider).to.include('eSignet'); });",
+                  "pm.collectionVariables.set('consent_id', a.consent_id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{bene_api_url}}/consent-requests/{{rid_approve}}/approve",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"grants\": [{\"data_controller\": \"{{data_controller}}\", \"data_scopes\": [\"{{data_scope}}\"]}]}"
+            },
+            "description": "The farmer approves their own request: a consent is created (`assurance.subject_authentication.login: bene_api`)."
+          }
+        },
+        {
+          "name": "2d My consents",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('new consent listed', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().items.map(c => c.consent_id)).to.include(pm.collectionVariables.get('consent_id')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              }
+            ],
+            "url": "{{bene_api_url}}/my/consents",
+            "description": "The farmer's consents."
+          }
+        },
+        {
+          "name": "2e My consent detail",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const c = pm.response.json();",
+                  "pm.test('active, own FIN', () => { pm.response.to.have.status(200); pm.expect(c.status).to.eql('active'); pm.expect(c.subject_id_value).to.eql(pm.variables.get('farmer_national_id')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              }
+            ],
+            "url": "{{bene_api_url}}/my/consents/{{consent_id}}",
+            "description": "One of the farmer's consents: active, for their national ID."
+          }
+        },
+        {
+          "name": "2f My receipt (unknown id) -> 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unknown receipt 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              }
+            ],
+            "url": "{{bene_api_url}}/my/receipts/00000000-0000-0000-0000-000000000000",
+            "description": "An unknown receipt ID answers `404`."
+          }
+        },
+        {
+          "name": "2g Revoke my consent",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('revoked', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql('revoked'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{bene_api_url}}/my/consents/{{consent_id}}/revoke",
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "description": "The farmer revokes their consent."
+          }
+        },
+        {
+          "name": "2h Revoke again -> 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('already revoked 409', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{bene_api_url}}/consents/{{consent_id}}/revoke",
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "description": "A revoked consent cannot be revoked again (`409`)."
+          }
+        },
+        {
+          "name": "2i Deny own request",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('denied', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql('denied'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{bene_api_url}}/consent-requests/{{rid_deny}}/deny",
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "description": "The farmer denies their other request."
+          }
+        },
+        {
+          "name": "2j Approve the denied request -> 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('denied request cannot be approved', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{bene_api_url}}/consent-requests/{{rid_deny}}/approve",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"grants\": [{\"data_controller\": \"{{data_controller}}\", \"data_scopes\": [\"{{data_scope}}\"]}]}"
+            },
+            "description": "A denied request cannot be approved (`409`)."
+          }
+        }
+      ],
+      "description": "The farmer's own requests and consents, with the bene API token."
+    },
+    {
+      "name": "3 Negative checks",
+      "item": [
+        {
+          "name": "3a No token -> 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 without token', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/my/consents",
+            "description": "Without a token the farmer routes answer `401`."
+          }
+        },
+        {
+          "name": "3b Staff (Keycloak) token on my consents -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 beneficiary API login required', () => { pm.response.to.have.status(403); pm.expect(pm.response.text()).to.include('beneficiary API login'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              }
+            ],
+            "url": "{{bene_api_url}}/my/consents",
+            "description": "A staff token is not a farmer token: farmer routes refuse it (`403`)."
+          }
+        },
+        {
+          "name": "3c Staff (Keycloak) token approving the other farmer's request -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 beneficiary API login required', () => { pm.response.to.have.status(403); pm.expect(pm.response.text()).to.include('beneficiary API login'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{bene_api_url}}/consent-requests/{{rid_other}}/approve",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"grants\": [{\"data_controller\": \"{{data_controller}}\", \"data_scopes\": [\"{{data_scope}}\"]}]}"
+            },
+            "description": "A staff token is not a farmer token: farmer routes refuse it (`403`)."
+          }
+        },
+        {
+          "name": "3d Other farmer's request -> 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('hidden (404)', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              }
+            ],
+            "url": "{{bene_api_url}}/consent-requests/{{rid_other}}",
+            "description": "Another farmer's request is not visible (`404`, not `403`, so its existence is not revealed)."
+          }
+        },
+        {
+          "name": "3e Approve other farmer's request -> 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cannot answer (404)', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{bene_api_url}}/consent-requests/{{rid_other}}/approve",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"grants\": [{\"data_controller\": \"{{data_controller}}\", \"data_scopes\": [\"{{data_scope}}\"]}]}"
+            },
+            "description": "Another farmer's request is not visible (`404`, not `403`, so its existence is not revealed)."
+          }
+        },
+        {
+          "name": "3f Farmer raises a request -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a subject cannot raise requests', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{bene_api_url}}/consent-requests",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"subject_id\": {\"type\": \"{{subject_id_type}}\", \"value\": \"{{farmer_national_id}}\"}, \"partner_id\": \"{{binding_id}}\", \"purpose\": {\"code\": \"{{purpose_code}}\"}, \"grants\": [{\"data_controller\": \"{{data_controller}}\", \"data_scopes\": [\"{{data_scope}}\"]}]}"
+            },
+            "description": "Only a service raises requests; a farmer (or consent login) token is refused (`403`)."
+          }
+        },
+        {
+          "name": "3g Tampered bene token -> 401",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get('bene_token');",
+                  "pm.variables.set('tampered', t.slice(0, -4) + (t.slice(-4) === 'AAAA' ? 'BBBB' : 'AAAA'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 tampered', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tampered}}"
+              }
+            ],
+            "url": "{{bene_api_url}}/beneficiary/auth/me",
+            "description": "A token with a changed signature is refused (`401`)."
+          }
+        },
+        {
+          "name": "3h Bene token on the staff API -> refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('staff API refuses the bene token', () => pm.expect(pm.response.code).to.be.oneOf([401, 403]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              }
+            ],
+            "url": "{{staff_api_url}}/partners",
+            "description": "Farmer tokens are not accepted by the staff API."
+          }
+        },
+        {
+          "name": "3i Login with a foreign return_url -> 400",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('no open redirect (400)', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/beneficiary/auth/login?return_url=https%3A%2F%2Fevil.test%2Fsteal",
+            "description": "Only allowed return URLs are accepted (no open redirect)."
+          }
+        }
+      ],
+      "description": "What the bene API must refuse."
+    }
+  ]
+}

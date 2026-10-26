@@ -6,8 +6,12 @@ states its differences (audience, auth, signing, hostname). Body is identical to
 templates/api/deployment.yaml.
 */ -}}
 {{- range $api := .Values.extraApis }}
-{{- if $api.enabled }}
+{{- if include "consentManager.extraApiOn" (dict "api" $api "root" $) }}
 {{- $values := merge (deepCopy $api) (deepCopy $.Values.consentManagerApi) -}}
+{{- /* National-ID logins (bene API auth, consent login): their tokens are signed
+       with the CM key, and they use the eSignet client's key. */ -}}
+{{- $beneAuth := and (eq (toString $values.apiAudience) "beneficiary") (include "consentManager.nationalIdLoginOn" $) -}}
+{{- if $beneAuth }}{{ $_ := set $values "signingKeyMounted" true }}{{ end -}}
 {{- $context := dict "Values" (merge (deepCopy $values) (dict "global" $.Values.global)) "Chart" $.Chart "Release" $.Release "Files" $.Files "Capabilities" $.Capabilities -}}
 {{- with $context }}
 ---
@@ -65,6 +69,9 @@ spec:
             {{- . | nindent 12 }}
             {{- end }}
             {{- end }}
+            {{- if $beneAuth }}
+            {{- include "consentManager.beneAuthEnv" $ | trim | nindent 12 }}
+            {{- end }}
             - name: CONSENT_MANAGER_API_AUDIENCE
               value: {{ .Values.apiAudience | quote }}
             - name: CONSENT_MANAGER_AUTH_ENABLED
@@ -92,20 +99,41 @@ spec:
           {{- if and .Values.readinessProbe .Values.readinessProbe.enabled }}
           readinessProbe: {{- include "common.tplvalues.render" (dict "value" (omit .Values.readinessProbe "enabled") "context" $) | nindent 12 }}
           {{- end }}
-          {{- if and .Values.signingKey.enabled .Values.signingKeyMounted }}
+          {{- $signing := and .Values.signingKey.enabled .Values.signingKeyMounted }}
+          {{- if or $signing $beneAuth }}
           volumeMounts:
+            {{- if $signing }}
             - name: signing-key
               mountPath: {{ .Values.signingKey.mountPath }}
               readOnly: true
+            {{- end }}
+            {{- if $beneAuth }}
+            - name: subject-auth-key
+              mountPath: {{ $.Values.partnerPortal.subjectAuth.keyMountPath }}
+              readOnly: true
+            {{- end }}
           {{- end }}
-      {{- if and .Values.signingKey.enabled .Values.signingKeyMounted }}
+      {{- if or $signing $beneAuth }}
       volumes:
+        {{- if $signing }}
         - name: signing-key
           secret:
             secretName: {{ .Values.signingKey.secretName }}
             items:
               - key: {{ .Values.signingKey.secretKey }}
                 path: {{ .Values.signingKey.secretKey }}
+        {{- end }}
+        {{- if $beneAuth }}
+        # Created by the subject-auth bootstrap Job, possibly after the pod
+        # starts: optional, and the api reads the key when first needed.
+        - name: subject-auth-key
+          secret:
+            secretName: {{ tpl $.Values.partnerPortal.subjectAuth.keySecretName $ }}
+            optional: true
+            items:
+              - key: client.pem
+                path: client.pem
+        {{- end }}
       {{- end }}
 {{- end }}
 {{- end }}

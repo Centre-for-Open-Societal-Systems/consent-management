@@ -1,6 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { BadgeCheck, FileSearch, Handshake, LogOut, ShieldCheck, Stamp } from "lucide-react";
-import { currentUser, isAdmin, isApprover, isDevMode, logout } from "../auth";
+import { currentUser, getConfig, isAdmin, isApprover, isDevMode, logout } from "../auth";
 import "./Layout.css";
 
 // The OpenG2P shell, as in the Master Data UI and the partner portal: a black
@@ -41,9 +41,12 @@ export default function Layout() {
               <FileSearch size={18} /> Decisions
             </NavLink>
           )}
-          <NavLink to="/my/consents" className={navClass}>
-            <ShieldCheck size={18} /> My Consents
-          </NavLink>
+          {/* With farmer login on, /my/consents is the farmer's own page (national ID). */}
+          {!getConfig().beneficiaryAuth?.enabled && (
+            <NavLink to="/my/consents" className={navClass}>
+              <ShieldCheck size={18} /> My Consents
+            </NavLink>
+          )}
         </nav>
         <div className="sidebar-user">
           {isDevMode() && <span className="dev-pill">dev</span>}

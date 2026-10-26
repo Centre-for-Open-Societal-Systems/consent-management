@@ -1,16 +1,17 @@
-{{- if and (include "consentManager.subjectAuthOn" .) .Values.partnerPortal.subjectAuth.bootstrap.enabled }}
+{{- if and (include "consentManager.esignetClientOn" .) .Values.partnerPortal.subjectAuth.bootstrap.enabled }}
 {{- $sa := .Values.partnerPortal.subjectAuth -}}
 {{- $b := $sa.bootstrap -}}
 {{- $name := printf "%s-subject-auth-bootstrap" .Release.Name -}}
 {{- $secret := tpl $sa.keySecretName . -}}
 {{- /*
   The CM's OIDC client in eSignet, for the subject's national-ID login in the
-  partner portal (same design as the registry's registrant-auth bootstrap):
+  partner portal and for the beneficiary API auth (beneApiAuth) (same design as
+  the registry's registrant-auth bootstrap):
 
     1. the client's RSA key: restored from Secret <keySecretName>, or generated
        once and stored there (a Secret outlives a reinstall; the key is never
        rotated here, because eSignet holds its public half);
-    2. the client in eSignet's database (esignet.client_detail): redirect URI,
+    2. the client in eSignet's database (esignet.client_detail): redirect URIs,
        claims, ACR, private_key_jwt with the public key (kid = client ID).
        eSignet's client API needs the add_oidc_client scope, which an install
        cannot obtain, so the row is written directly.
@@ -134,8 +135,9 @@ spec:
                   key: {{ $b.esignetDbSecretKey | quote }}
             - name: CLIENT_ID
               value: {{ tpl $sa.clientId $ | quote }}
-            - name: REDIRECT_URI
-              value: {{ tpl $sa.redirectUri $ | quote }}
+            # The partner portal's and/or the bene API auth callback (JSON list).
+            - name: REDIRECT_URIS
+              value: {{ include "consentManager.esignetRedirectUris" $ | quote }}
             - name: ESIGNET_BASE
               value: {{ printf "https://%s" (tpl $sa.esignetHostname $) | quote }}
             - name: ACR_VALUES
@@ -161,14 +163,14 @@ spec:
                 (id, name, rp_id, logo_uri, redirect_uris, claims, acr_values, public_key,
                  grant_types, auth_methods, status, cr_dtimes)
               VALUES ('$CLIENT_ID', 'Consent Manager partner portal', 'openg2p', '$ESIGNET_BASE/logo.png',
-                      '["$REDIRECT_URI"]', '$CLAIMS', '["$ACR_VALUES"]', '$JWK',
+                      '$REDIRECT_URIS', '$CLAIMS', '["$ACR_VALUES"]', '$JWK',
                       '["authorization_code"]', '["private_key_jwt"]', 'ACTIVE', now())
               ON CONFLICT (id) DO UPDATE
                 SET redirect_uris = EXCLUDED.redirect_uris, claims = EXCLUDED.claims,
                     acr_values = EXCLUDED.acr_values, public_key = EXCLUDED.public_key,
                     status = 'ACTIVE', upd_dtimes = now();
               SQL
-              echo "eSignet client '$CLIENT_ID' registered (redirect $REDIRECT_URI)."
+              echo "eSignet client '$CLIENT_ID' registered (redirects $REDIRECT_URIS)."
           volumeMounts:
             - name: keys
               mountPath: /keys

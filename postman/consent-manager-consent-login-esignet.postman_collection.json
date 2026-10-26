@@ -1,0 +1,1850 @@
+{
+  "info": {
+    "_postman_id": "116a9c6e-8dc9-58a5-8797-223de5b46a9b",
+    "name": "Consent Manager - Consent login (eSignet)",
+    "description": "**Consent login** with national ID (eSignet) for **one** consent request, separate from the bene API auth: `start?request_id` → eSignet OTP → `/consent-login/callback` (the national ID must be the request's subject) → one-time code (JSON, API client) → a token valid only to read, grant or decline that request.\n\n**Folders**\n- **0 Setup**: a service (staff token) raises three requests: one to grant, one to decline, one for another farmer.\n- **1 Config and bad starts**: unknown request, foreign `return_url`, missing `request_id`.\n- **2–3**: consent login for the first request, then grant it (consent records `login: consent_login`).\n- **4**: the token is refused for everything else (other request, my consents, revoke, raise, staff API, tampered token, staff token).\n- **5–6**: consent login for the second request, then decline it; the first request's token cannot act on it.\n- **7**: another farmer's request: the callback refuses a national ID that is not the subject.\n\n**Needs** a Consent Manager with `consentLogin.enabled: true`, eSignet with the **mock identity system**, and a partner binding for `{{data_controller}}`. See `BENE-API-ESIGNET-AUTH.md` section 7.\n\n**Run** (Postman CLI or newman; secrets are passed on the command line, never stored):\n\n```\npostman collection run postman/consent-manager-consent-login-esignet.postman_collection.json \\\n  -e postman/environments/local.postman_environment.json \\\n  --env-var staff_username=<staff user> --env-var staff_password=<password>\n```\n\nSee `postman/README.md` for the variables and for running against a deployed environment.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "auth_code",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "auth_state",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "binding_id",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "cl_token",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "consent_id",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "login_code",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "oauth_hash",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "q_acr_values",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "q_claims",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "q_client_id",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "q_code_challenge",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "q_nonce",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "q_redirect_uri",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "q_scope",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "q_state",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "rid_decline",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "rid_grant",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "rid_other",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "staff_token",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "txn",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    },
+    {
+      "key": "xsrf",
+      "value": "",
+      "type": "string",
+      "description": "Set by the run."
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.variables.set('now', new Date().toISOString());",
+          "// Every variable a run needs (postman/environments; secrets with --env-var).",
+          "['bene_api_url', 'staff_api_url', 'esignet_api_url', 'keycloak_url', 'staff_realm', 'staff_client_id',",
+          " 'staff_username', 'staff_password', 'partner_audience', 'data_controller', 'data_scope', 'purpose_code',",
+          " 'subject_id_type', 'farmer_national_id', 'other_national_id', 'otp'].forEach(k => {",
+          "  if (pm.variables.get(k)) return;",
+          "  pm.execution.setNextRequest(null);  // stop the run",
+          "  throw new Error(`Variable '${k}' is not set: select an environment (postman/environments) or pass --env-var ${k}=...`);",
+          "});"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test('no server error', () => pm.expect(pm.response.code, pm.response.text()).to.be.below(500));"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "0 Setup (service raises requests)",
+      "item": [
+        {
+          "name": "0a Staff token (Keycloak staff realm)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('staff token', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('staff_token', pm.response.json().access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{keycloak_url}}/realms/{{staff_realm}}/protocol/openid-connect/token",
+            "header": [],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password"
+                },
+                {
+                  "key": "client_id",
+                  "value": "{{staff_client_id}}"
+                },
+                {
+                  "key": "username",
+                  "value": "{{staff_username}}"
+                },
+                {
+                  "key": "password",
+                  "value": "{{staff_password}}"
+                }
+              ]
+            },
+            "description": "Gets a staff access token from Keycloak (password grant). Setup only: a service raises the consent requests the farmer then answers."
+          }
+        },
+        {
+          "name": "0b Find the partner binding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json().find(x => x.controller_id === pm.variables.get('data_controller'));",
+                  "pm.test('binding found', () => pm.expect(b).to.be.an('object'));",
+                  "pm.collectionVariables.set('binding_id', b.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{staff_api_url}}/partners?audience={{partner_audience}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              }
+            ],
+            "description": "Finds the partner's binding for `{{data_controller}}`; its ID is the `partner_id` of the requests raised next."
+          }
+        },
+        {
+          "name": "0c Raise request for the farmer (to grant)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('raised 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('rid_grant', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{bene_api_url}}/consent-requests",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"subject_id\": {\"type\": \"{{subject_id_type}}\", \"value\": \"{{farmer_national_id}}\"}, \"partner_id\": \"{{binding_id}}\", \"purpose\": {\"code\": \"{{purpose_code}}\"}, \"grants\": [{\"data_controller\": \"{{data_controller}}\", \"data_scopes\": [\"{{data_scope}}\"]}]}"
+            },
+            "description": "Raises a consent request for `{{farmer_national_id}}` as a service (staff token). This is the only non-farmer call on the bene API."
+          }
+        },
+        {
+          "name": "0d Raise request for the farmer (to decline)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('raised 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('rid_decline', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{bene_api_url}}/consent-requests",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"subject_id\": {\"type\": \"{{subject_id_type}}\", \"value\": \"{{farmer_national_id}}\"}, \"partner_id\": \"{{binding_id}}\", \"purpose\": {\"code\": \"{{purpose_code}}\"}, \"grants\": [{\"data_controller\": \"{{data_controller}}\", \"data_scopes\": [\"{{data_scope}}\"]}]}"
+            },
+            "description": "Raises a consent request for `{{farmer_national_id}}` as a service (staff token). This is the only non-farmer call on the bene API."
+          }
+        },
+        {
+          "name": "0e Raise request for another farmer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('raised 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('rid_other', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{bene_api_url}}/consent-requests",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"subject_id\": {\"type\": \"{{subject_id_type}}\", \"value\": \"{{other_national_id}}\"}, \"partner_id\": \"{{binding_id}}\", \"purpose\": {\"code\": \"{{purpose_code}}\"}, \"grants\": [{\"data_controller\": \"{{data_controller}}\", \"data_scopes\": [\"{{data_scope}}\"]}]}"
+            },
+            "description": "Raises a consent request for `{{other_national_id}}` (staff token), used to check that a farmer cannot see or answer someone else's request."
+          }
+        }
+      ],
+      "description": "Setup: a service (staff token) raises the consent requests used below."
+    },
+    {
+      "name": "1 Consent login: config + bad starts",
+      "item": [
+        {
+          "name": "1a Consent login config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('consent login enabled', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().enabled).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/consent-login/config",
+            "header": [],
+            "description": "Public: tells a client whether the consent login is on."
+          }
+        },
+        {
+          "name": "1b Start for an unknown request -> 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unknown request 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/consent-login/start?request_id=00000000-0000-0000-0000-000000000000",
+            "header": [],
+            "description": "Bad starts are refused before eSignet is involved."
+          },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          }
+        },
+        {
+          "name": "1c Start with a foreign return_url -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('no open redirect (400)', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/consent-login/start?request_id={{rid_grant}}&return_url=https%3A%2F%2Fevil.test%2Fsteal",
+            "header": [],
+            "description": "Bad starts are refused before eSignet is involved."
+          },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          }
+        },
+        {
+          "name": "1d Start without request_id -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request_id is required', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/consent-login/start",
+            "header": [],
+            "description": "Bad starts are refused before eSignet is involved."
+          },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          }
+        }
+      ],
+      "description": "Config, and starts that must be refused."
+    },
+    {
+      "name": "2 Consent login for the request to grant",
+      "item": [
+        {
+          "name": "2a Start consent login for the request (no return_url)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const loc = pm.response.headers.get('Location') || '';",
+                  "pm.test('302 to eSignet /authorize', () => { pm.response.to.have.status(302); pm.expect(loc).to.include('/authorize?'); });",
+                  "const q = {};",
+                  "loc.split('?')[1].split('&').forEach(p => { const i = p.indexOf('='); q[p.slice(0, i)] = decodeURIComponent(p.slice(i + 1).replace(/\\+/g, ' ')); });",
+                  "pm.test('own callback (consent-login), PKCE S256', () => { pm.expect(q.redirect_uri).to.include('/consent-login/callback'); pm.expect(q.code_challenge_method).to.eql('S256'); });",
+                  "['client_id', 'redirect_uri', 'scope', 'state', 'nonce', 'code_challenge', 'acr_values', 'claims'].forEach(k => pm.collectionVariables.set('q_' + k, q[k] || ''));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/consent-login/start?request_id={{rid_grant}}",
+            "header": [],
+            "description": "Starts a consent login **for one request** as an API client (`302` to eSignet)."
+          },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          }
+        },
+        {
+          "name": "2b eSignet CSRF token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('csrf token', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('xsrf', pm.response.json().token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{esignet_api_url}}/csrf/token",
+            "header": [],
+            "description": "eSignet: CSRF token for the next calls.\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "2c eSignet oauth-details",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('oauth-details ok', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().errors || []).to.be.empty; });",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('txn', body.response.transactionId);",
+                  "pm.collectionVariables.set('oauth_hash', CryptoJS.SHA256(JSON.stringify(body.response)).toString(CryptoJS.enc.Base64).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, ''));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{esignet_api_url}}/authorization/v3/oauth-details",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requestTime\": \"{{now}}\", \"request\": {\"clientId\": \"{{q_client_id}}\", \"scope\": \"{{q_scope}}\", \"responseType\": \"code\", \"redirectUri\": \"{{q_redirect_uri}}\", \"display\": \"popup\", \"prompt\": \"login\", \"acrValues\": \"{{q_acr_values}}\", \"nonce\": \"{{q_nonce}}\", \"state\": \"{{q_state}}\", \"claimsLocales\": \"en\", \"uiLocales\": \"en\", \"claims\": {{q_claims}}, \"codeChallenge\": \"{{q_code_challenge}}\", \"codeChallengeMethod\": \"S256\"}}"
+            },
+            "description": "eSignet: opens the login transaction for the authorize request (client, redirect URI, claims, PKCE).\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "2d eSignet send OTP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OTP sent', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().errors || []).to.be.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{esignet_api_url}}/authorization/send-otp",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "oauth-details-key",
+                "value": "{{txn}}"
+              },
+              {
+                "key": "oauth-details-hash",
+                "value": "{{oauth_hash}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requestTime\": \"{{now}}\", \"request\": {\"transactionId\": \"{{txn}}\", \"individualId\": \"{{farmer_national_id}}\", \"otpChannels\": [\"phone\"], \"captchaToken\": \"x\"}}"
+            },
+            "description": "eSignet: sends the OTP to the farmer's phone.\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "2e eSignet authenticate (OTP)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('authenticated', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().errors || []).to.be.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{esignet_api_url}}/authorization/v3/authenticate",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "oauth-details-key",
+                "value": "{{txn}}"
+              },
+              {
+                "key": "oauth-details-hash",
+                "value": "{{oauth_hash}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requestTime\": \"{{now}}\", \"request\": {\"transactionId\": \"{{txn}}\", \"individualId\": \"{{farmer_national_id}}\", \"challengeList\": [{\"authFactorType\": \"OTP\", \"challenge\": \"{{otp}}\", \"format\": \"alpha-numeric\"}]}}"
+            },
+            "description": "eSignet: checks the OTP.\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "2f eSignet auth-code",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('auth code issued', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().errors || []).to.be.empty; });",
+                  "const r = pm.response.json().response;",
+                  "pm.collectionVariables.set('auth_code', r.code);",
+                  "pm.collectionVariables.set('auth_state', r.state);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{esignet_api_url}}/authorization/auth-code",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "oauth-details-key",
+                "value": "{{txn}}"
+              },
+              {
+                "key": "oauth-details-hash",
+                "value": "{{oauth_hash}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requestTime\": \"{{now}}\", \"request\": {\"transactionId\": \"{{txn}}\", \"acceptedClaims\": [\"individual_id\", \"name\"], \"permittedAuthorizeScopes\": []}}"
+            },
+            "description": "eSignet: the farmer accepts sharing `individual_id` and `name`; eSignet issues the authorization code for the redirect URI.\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "2g Callback -> one-time code (JSON)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test('200 JSON code for this request', () => { pm.response.to.have.status(200); pm.expect(b.code).to.be.ok; pm.expect(b.consent_request_id).to.eql(pm.collectionVariables.get('rid_grant')); });",
+                  "pm.collectionVariables.set('login_code', b.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/consent-login/callback?state={{auth_state}}&code={{auth_code}}",
+            "header": [],
+            "description": "The redirect URI eSignet sends the browser to. The CM exchanges the code with eSignet (`private_key_jwt`), checks the ID token and userinfo, and answers an API client with a one-time code (JSON, valid 120 s)."
+          },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          }
+        },
+        {
+          "name": "2h Token (one-time code -> consent login token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.response.json();",
+                  "pm.test('token for this request only', () => { pm.response.to.have.status(200); pm.expect(t.consent_request_id).to.eql(pm.collectionVariables.get('rid_grant')); pm.expect(t.subject_id.value).to.eql(pm.variables.get('farmer_national_id')); });",
+                  "const head = JSON.parse(atob(t.access_token.split('.')[0].replace(/-/g, '+').replace(/_/g, '/')));",
+                  "pm.test('typ consent-login+jwt', () => pm.expect(head.typ).to.eql('consent-login+jwt'));",
+                  "pm.collectionVariables.set('cl_token', t.access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{bene_api_url}}/consent-login/token",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"{{login_code}}\"}"
+            },
+            "description": "Exchanges the one-time code for a **consent login token**: valid only to read, grant or decline this one request."
+          }
+        },
+        {
+          "name": "2i Token again with the same code -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code works once', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{bene_api_url}}/consent-login/token",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"{{login_code}}\"}"
+            },
+            "description": "A one-time code works once: the second exchange is refused (`400`)."
+          }
+        },
+        {
+          "name": "2j Callback again with the same state -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('state works once', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/consent-login/callback?state={{auth_state}}&code={{auth_code}}",
+            "header": [],
+            "description": "Replaying the same `state` is refused (`400`)."
+          },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          }
+        }
+      ],
+      "description": "Consent login for the request to grant."
+    },
+    {
+      "name": "3 Grant with the consent login token",
+      "item": [
+        {
+          "name": "3a Get the request",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pending', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql('pending'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/consent-requests/{{rid_grant}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cl_token}}"
+              }
+            ],
+            "description": "Reads the request the consent login is for."
+          }
+        },
+        {
+          "name": "3b Grant -> consent (login: consent_login)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const a = pm.response.json();",
+                  "pm.test('consent created (201)', () => pm.response.to.have.status(201));",
+                  "pm.test('assurance: self_service, consent_login by eSignet', () => { pm.expect(a.assurance.method).to.eql('self_service'); pm.expect(a.assurance.subject_authentication.login).to.eql('consent_login'); pm.expect(a.assurance.subject_authentication.provider).to.include('eSignet'); });",
+                  "pm.collectionVariables.set('consent_id', a.consent_id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{bene_api_url}}/consent-requests/{{rid_grant}}/approve",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cl_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"grants\": [{\"data_controller\": \"{{data_controller}}\", \"data_scopes\": [\"{{data_scope}}\"]}]}"
+            },
+            "description": "Grants the request: a consent is created (`assurance.subject_authentication.login: consent_login`)."
+          }
+        },
+        {
+          "name": "3c Grant again -> 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('already answered 409', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{bene_api_url}}/consent-requests/{{rid_grant}}/approve",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cl_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"grants\": [{\"data_controller\": \"{{data_controller}}\", \"data_scopes\": [\"{{data_scope}}\"]}]}"
+            },
+            "description": "A granted request cannot be granted again (`409`)."
+          }
+        },
+        {
+          "name": "3d Start a consent login for the granted request -> 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not pending 409', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/consent-login/start?request_id={{rid_grant}}",
+            "header": [],
+            "description": "A request that was already answered cannot get a new consent login (`409`)."
+          },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          }
+        }
+      ],
+      "description": "Grant the request with the consent login token."
+    },
+    {
+      "name": "4 The consent login token is only for its request",
+      "item": [
+        {
+          "name": "4a Same farmer's OTHER request -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('other request 403', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/consent-requests/{{rid_decline}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cl_token}}"
+              }
+            ],
+            "description": "The token is only for its own request: the farmer's other request is refused (`403`)."
+          }
+        },
+        {
+          "name": "4b Decline the OTHER request -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('other request 403', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{bene_api_url}}/consent-requests/{{rid_decline}}/deny",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cl_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "description": "The token is only for its own request: the farmer's other request is refused (`403`)."
+          }
+        },
+        {
+          "name": "4c My consents -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('no /my/* with a consent login', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/my/consents",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cl_token}}"
+              }
+            ],
+            "description": "A consent login token is not a bene API token: the farmer's lists are refused (`403`)."
+          }
+        },
+        {
+          "name": "4d My consent requests -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('no /my/* with a consent login', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/my/consent-requests",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cl_token}}"
+              }
+            ],
+            "description": "A consent login token is not a bene API token: the farmer's lists are refused (`403`)."
+          }
+        },
+        {
+          "name": "4e Revoke the new consent -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('no revoke with a consent login', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{bene_api_url}}/my/consents/{{consent_id}}/revoke",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cl_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "description": "A consent login token cannot revoke (`403`)."
+          }
+        },
+        {
+          "name": "4f Revoke (lifecycle route) -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('no revoke with a consent login', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{bene_api_url}}/consents/{{consent_id}}/revoke",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cl_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "description": "A consent login token cannot revoke (`403`)."
+          }
+        },
+        {
+          "name": "4g Bene API auth /me -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not a beneficiary API login', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/beneficiary/auth/me",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cl_token}}"
+              }
+            ],
+            "description": "A consent login token is not a bene API token (`403`)."
+          }
+        },
+        {
+          "name": "4h Raise a request -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a subject cannot raise requests', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{bene_api_url}}/consent-requests",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cl_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"subject_id\": {\"type\": \"{{subject_id_type}}\", \"value\": \"{{farmer_national_id}}\"}, \"partner_id\": \"{{binding_id}}\", \"purpose\": {\"code\": \"{{purpose_code}}\"}, \"grants\": [{\"data_controller\": \"{{data_controller}}\", \"data_scopes\": [\"{{data_scope}}\"]}]}"
+            },
+            "description": "Only a service raises requests; a farmer (or consent login) token is refused (`403`)."
+          }
+        },
+        {
+          "name": "4i Staff API -> refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('staff API refuses it', () => pm.expect(pm.response.code).to.be.oneOf([401, 403]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{staff_api_url}}/partners",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cl_token}}"
+              }
+            ],
+            "description": "Farmer tokens are not accepted by the staff API."
+          }
+        },
+        {
+          "name": "4j Tampered token -> 401",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get('cl_token');",
+                  "pm.variables.set('tampered', t.slice(0, -4) + (t.slice(-4) === 'AAAA' ? 'BBBB' : 'AAAA'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 tampered', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/consent-requests/{{rid_grant}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tampered}}"
+              }
+            ],
+            "description": "A token with a changed signature is refused (`401`)."
+          }
+        },
+        {
+          "name": "4k Staff (Keycloak) token on the request -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('national-ID login required', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/consent-requests/{{rid_grant}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              }
+            ],
+            "description": "A staff token is not a farmer token: farmer routes refuse it (`403`)."
+          }
+        }
+      ],
+      "description": "The consent login token is refused for anything but its own request."
+    },
+    {
+      "name": "5 Consent login for the request to decline",
+      "item": [
+        {
+          "name": "5a Start consent login for the request (no return_url)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const loc = pm.response.headers.get('Location') || '';",
+                  "pm.test('302 to eSignet /authorize', () => { pm.response.to.have.status(302); pm.expect(loc).to.include('/authorize?'); });",
+                  "const q = {};",
+                  "loc.split('?')[1].split('&').forEach(p => { const i = p.indexOf('='); q[p.slice(0, i)] = decodeURIComponent(p.slice(i + 1).replace(/\\+/g, ' ')); });",
+                  "pm.test('own callback (consent-login), PKCE S256', () => { pm.expect(q.redirect_uri).to.include('/consent-login/callback'); pm.expect(q.code_challenge_method).to.eql('S256'); });",
+                  "['client_id', 'redirect_uri', 'scope', 'state', 'nonce', 'code_challenge', 'acr_values', 'claims'].forEach(k => pm.collectionVariables.set('q_' + k, q[k] || ''));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/consent-login/start?request_id={{rid_decline}}",
+            "header": [],
+            "description": "Starts a consent login **for one request** as an API client (`302` to eSignet)."
+          },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          }
+        },
+        {
+          "name": "5b eSignet CSRF token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('csrf token', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('xsrf', pm.response.json().token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{esignet_api_url}}/csrf/token",
+            "header": [],
+            "description": "eSignet: CSRF token for the next calls.\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "5c eSignet oauth-details",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('oauth-details ok', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().errors || []).to.be.empty; });",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('txn', body.response.transactionId);",
+                  "pm.collectionVariables.set('oauth_hash', CryptoJS.SHA256(JSON.stringify(body.response)).toString(CryptoJS.enc.Base64).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, ''));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{esignet_api_url}}/authorization/v3/oauth-details",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requestTime\": \"{{now}}\", \"request\": {\"clientId\": \"{{q_client_id}}\", \"scope\": \"{{q_scope}}\", \"responseType\": \"code\", \"redirectUri\": \"{{q_redirect_uri}}\", \"display\": \"popup\", \"prompt\": \"login\", \"acrValues\": \"{{q_acr_values}}\", \"nonce\": \"{{q_nonce}}\", \"state\": \"{{q_state}}\", \"claimsLocales\": \"en\", \"uiLocales\": \"en\", \"claims\": {{q_claims}}, \"codeChallenge\": \"{{q_code_challenge}}\", \"codeChallengeMethod\": \"S256\"}}"
+            },
+            "description": "eSignet: opens the login transaction for the authorize request (client, redirect URI, claims, PKCE).\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "5d eSignet send OTP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OTP sent', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().errors || []).to.be.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{esignet_api_url}}/authorization/send-otp",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "oauth-details-key",
+                "value": "{{txn}}"
+              },
+              {
+                "key": "oauth-details-hash",
+                "value": "{{oauth_hash}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requestTime\": \"{{now}}\", \"request\": {\"transactionId\": \"{{txn}}\", \"individualId\": \"{{farmer_national_id}}\", \"otpChannels\": [\"phone\"], \"captchaToken\": \"x\"}}"
+            },
+            "description": "eSignet: sends the OTP to the farmer's phone.\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "5e eSignet authenticate (OTP)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('authenticated', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().errors || []).to.be.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{esignet_api_url}}/authorization/v3/authenticate",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "oauth-details-key",
+                "value": "{{txn}}"
+              },
+              {
+                "key": "oauth-details-hash",
+                "value": "{{oauth_hash}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requestTime\": \"{{now}}\", \"request\": {\"transactionId\": \"{{txn}}\", \"individualId\": \"{{farmer_national_id}}\", \"challengeList\": [{\"authFactorType\": \"OTP\", \"challenge\": \"{{otp}}\", \"format\": \"alpha-numeric\"}]}}"
+            },
+            "description": "eSignet: checks the OTP.\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "5f eSignet auth-code",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('auth code issued', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().errors || []).to.be.empty; });",
+                  "const r = pm.response.json().response;",
+                  "pm.collectionVariables.set('auth_code', r.code);",
+                  "pm.collectionVariables.set('auth_state', r.state);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{esignet_api_url}}/authorization/auth-code",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "oauth-details-key",
+                "value": "{{txn}}"
+              },
+              {
+                "key": "oauth-details-hash",
+                "value": "{{oauth_hash}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requestTime\": \"{{now}}\", \"request\": {\"transactionId\": \"{{txn}}\", \"acceptedClaims\": [\"individual_id\", \"name\"], \"permittedAuthorizeScopes\": []}}"
+            },
+            "description": "eSignet: the farmer accepts sharing `individual_id` and `name`; eSignet issues the authorization code for the redirect URI.\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "5g Callback -> one-time code (JSON)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test('200 JSON code for this request', () => { pm.response.to.have.status(200); pm.expect(b.code).to.be.ok; pm.expect(b.consent_request_id).to.eql(pm.collectionVariables.get('rid_decline')); });",
+                  "pm.collectionVariables.set('login_code', b.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/consent-login/callback?state={{auth_state}}&code={{auth_code}}",
+            "header": [],
+            "description": "The redirect URI eSignet sends the browser to. The CM exchanges the code with eSignet (`private_key_jwt`), checks the ID token and userinfo, and answers an API client with a one-time code (JSON, valid 120 s)."
+          },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          }
+        },
+        {
+          "name": "5h Token (one-time code -> consent login token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.response.json();",
+                  "pm.test('token for this request only', () => { pm.response.to.have.status(200); pm.expect(t.consent_request_id).to.eql(pm.collectionVariables.get('rid_decline')); pm.expect(t.subject_id.value).to.eql(pm.variables.get('farmer_national_id')); });",
+                  "const head = JSON.parse(atob(t.access_token.split('.')[0].replace(/-/g, '+').replace(/_/g, '/')));",
+                  "pm.test('typ consent-login+jwt', () => pm.expect(head.typ).to.eql('consent-login+jwt'));",
+                  "pm.collectionVariables.set('cl_token2', t.access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{bene_api_url}}/consent-login/token",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"{{login_code}}\"}"
+            },
+            "description": "Exchanges the one-time code for a **consent login token**: valid only to read, grant or decline this one request."
+          }
+        },
+        {
+          "name": "5i Token again with the same code -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code works once', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{bene_api_url}}/consent-login/token",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"{{login_code}}\"}"
+            },
+            "description": "A one-time code works once: the second exchange is refused (`400`)."
+          }
+        },
+        {
+          "name": "5j Callback again with the same state -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('state works once', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/consent-login/callback?state={{auth_state}}&code={{auth_code}}",
+            "header": [],
+            "description": "Replaying the same `state` is refused (`400`)."
+          },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          }
+        }
+      ],
+      "description": "Consent login for the request to decline."
+    },
+    {
+      "name": "6 Decline with its consent login token",
+      "item": [
+        {
+          "name": "6a Decline",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('denied', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql('denied'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{bene_api_url}}/consent-requests/{{rid_decline}}/deny",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cl_token2}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "description": "Declines the second request with its own consent login token."
+          }
+        },
+        {
+          "name": "6b The first request's token on this one -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('token bound to its own request', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{bene_api_url}}/consent-requests/{{rid_decline}}/approve",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cl_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"grants\": [{\"data_controller\": \"{{data_controller}}\", \"data_scopes\": [\"{{data_scope}}\"]}]}"
+            },
+            "description": "The first request's token cannot act on the second request (`403`)."
+          }
+        }
+      ],
+      "description": "Decline with that request's token."
+    },
+    {
+      "name": "7 Another farmer's request: the FIN must be its subject",
+      "item": [
+        {
+          "name": "7a Start consent login for the other farmer's request",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const loc = pm.response.headers.get('Location') || '';",
+                  "pm.test('302 to eSignet /authorize', () => { pm.response.to.have.status(302); pm.expect(loc).to.include('/authorize?'); });",
+                  "const q = {};",
+                  "loc.split('?')[1].split('&').forEach(p => { const i = p.indexOf('='); q[p.slice(0, i)] = decodeURIComponent(p.slice(i + 1).replace(/\\+/g, ' ')); });",
+                  "pm.test('own callback (consent-login), PKCE S256', () => { pm.expect(q.redirect_uri).to.include('/consent-login/callback'); pm.expect(q.code_challenge_method).to.eql('S256'); });",
+                  "['client_id', 'redirect_uri', 'scope', 'state', 'nonce', 'code_challenge', 'acr_values', 'claims'].forEach(k => pm.collectionVariables.set('q_' + k, q[k] || ''));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/consent-login/start?request_id={{rid_other}}",
+            "header": [],
+            "description": "Starts a consent login **for one request** as an API client (`302` to eSignet)."
+          },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          }
+        },
+        {
+          "name": "7b eSignet CSRF token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('csrf token', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('xsrf', pm.response.json().token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{esignet_api_url}}/csrf/token",
+            "header": [],
+            "description": "eSignet: CSRF token for the next calls.\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "7c eSignet oauth-details",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('oauth-details ok', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().errors || []).to.be.empty; });",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('txn', body.response.transactionId);",
+                  "pm.collectionVariables.set('oauth_hash', CryptoJS.SHA256(JSON.stringify(body.response)).toString(CryptoJS.enc.Base64).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, ''));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{esignet_api_url}}/authorization/v3/oauth-details",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requestTime\": \"{{now}}\", \"request\": {\"clientId\": \"{{q_client_id}}\", \"scope\": \"{{q_scope}}\", \"responseType\": \"code\", \"redirectUri\": \"{{q_redirect_uri}}\", \"display\": \"popup\", \"prompt\": \"login\", \"acrValues\": \"{{q_acr_values}}\", \"nonce\": \"{{q_nonce}}\", \"state\": \"{{q_state}}\", \"claimsLocales\": \"en\", \"uiLocales\": \"en\", \"claims\": {{q_claims}}, \"codeChallenge\": \"{{q_code_challenge}}\", \"codeChallengeMethod\": \"S256\"}}"
+            },
+            "description": "eSignet: opens the login transaction for the authorize request (client, redirect URI, claims, PKCE).\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "7d eSignet send OTP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OTP sent', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().errors || []).to.be.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{esignet_api_url}}/authorization/send-otp",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "oauth-details-key",
+                "value": "{{txn}}"
+              },
+              {
+                "key": "oauth-details-hash",
+                "value": "{{oauth_hash}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requestTime\": \"{{now}}\", \"request\": {\"transactionId\": \"{{txn}}\", \"individualId\": \"{{farmer_national_id}}\", \"otpChannels\": [\"phone\"], \"captchaToken\": \"x\"}}"
+            },
+            "description": "eSignet: sends the OTP to the farmer's phone.\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "7e eSignet authenticate (OTP)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('authenticated', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().errors || []).to.be.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{esignet_api_url}}/authorization/v3/authenticate",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "oauth-details-key",
+                "value": "{{txn}}"
+              },
+              {
+                "key": "oauth-details-hash",
+                "value": "{{oauth_hash}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requestTime\": \"{{now}}\", \"request\": {\"transactionId\": \"{{txn}}\", \"individualId\": \"{{farmer_national_id}}\", \"challengeList\": [{\"authFactorType\": \"OTP\", \"challenge\": \"{{otp}}\", \"format\": \"alpha-numeric\"}]}}"
+            },
+            "description": "eSignet: checks the OTP.\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "7f eSignet auth-code",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('auth code issued', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().errors || []).to.be.empty; });",
+                  "const r = pm.response.json().response;",
+                  "pm.collectionVariables.set('auth_code', r.code);",
+                  "pm.collectionVariables.set('auth_state', r.state);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{esignet_api_url}}/authorization/auth-code",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "oauth-details-key",
+                "value": "{{txn}}"
+              },
+              {
+                "key": "oauth-details-hash",
+                "value": "{{oauth_hash}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requestTime\": \"{{now}}\", \"request\": {\"transactionId\": \"{{txn}}\", \"acceptedClaims\": [\"individual_id\", \"name\"], \"permittedAuthorizeScopes\": []}}"
+            },
+            "description": "eSignet: the farmer accepts sharing `individual_id` and `name`; eSignet issues the authorization code for the redirect URI.\n\nThis is one of the calls the eSignet login page makes (the collection plays the page, so no browser is needed). It works with eSignet's **mock identity system** only (fixed OTP); against a real ID system log in through the browser instead."
+          }
+        },
+        {
+          "name": "7g Callback -> 400 not the request's subject",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('refused: not the request\\'s subject', () => { pm.response.to.have.status(400); pm.expect(pm.response.json().error).to.include(\"not the request's subject\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{bene_api_url}}/consent-login/callback?state={{auth_state}}&code={{auth_code}}",
+            "header": [],
+            "description": "The national ID that logged in is not the request's subject: refused (`400`)."
+          },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          }
+        }
+      ],
+      "description": "The national ID that logs in must be the request's subject."
+    }
+  ]
+}

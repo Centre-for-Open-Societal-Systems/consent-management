@@ -2,7 +2,7 @@
 // Every path is rooted at /consent/v1 (the backend router prefix). Admin calls
 // carry the Keycloak bearer token; the subject/consent-request flow reuses the
 // authenticated subject's token.
-import { getConfig, getToken, refreshToken } from "../auth";
+import { farmerSessionEnded, getConfig, getToken, isFarmerMode, refreshToken } from "../auth";
 import type {
   Artefact,
   AweTask,
@@ -43,6 +43,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(init.headers ?? {}),
     },
   });
+  // A farmer whose national-ID login expired logs in again.
+  if (res.status === 401 && isFarmerMode()) farmerSessionEnded();
   if (res.status === 204) return undefined as T;
   const text = await res.text();
   const body = text ? JSON.parse(text) : undefined;
@@ -141,6 +143,11 @@ export const api = {
       `${V1}/my/consents${status ? `?status=${encodeURIComponent(status)}` : ""}`
     ).then((p) => p.items),
   myConsent: (id: string) => request<Artefact>(`${V1}/my/consents/${id}`),
+  // Requests waiting for the subject (/consent/<id> to answer one).
+  myConsentRequests: (status?: string) =>
+    request<Paginated<ConsentRequest>>(
+      `${V1}/my/consent-requests${status ? `?status=${encodeURIComponent(status)}` : ""}`
+    ).then((p) => p.items),
   revokeMyConsent: (id: string) =>
     request<RevokeResponse>(`${V1}/my/consents/${id}/revoke`, {
       method: "POST",

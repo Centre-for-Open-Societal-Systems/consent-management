@@ -144,6 +144,118 @@ national-ID login on; always on for the exchange role). Root context.
 {{- if and $p.enabled (or ($p.subjectAuth | default dict).enabled $exchange) }}true{{ end -}}
 {{- end -}}
 
+{{/*
+true when beneficiary API auth (national ID, eSignet) is on (beneApiAuth.enabled).
+Root context.
+*/}}
+{{- define "consentManager.beneAuthOn" -}}
+{{- if (.Values.beneApiAuth | default dict).enabled }}true{{ end -}}
+{{- end -}}
+
+{{/*
+true when the consent login (national ID for one consent request, eSignet) is
+on (consentLogin.enabled). Separate from the beneficiary API auth. Root context.
+*/}}
+{{- define "consentManager.consentLoginOn" -}}
+{{- if (.Values.consentLogin | default dict).enabled }}true{{ end -}}
+{{- end -}}
+
+{{/*
+true when the beneficiary api has a national-ID login: the beneficiary API auth,
+the consent login, or both. Root context.
+*/}}
+{{- define "consentManager.nationalIdLoginOn" -}}
+{{- if or (include "consentManager.beneAuthOn" .) (include "consentManager.consentLoginOn" .) }}true{{ end -}}
+{{- end -}}
+
+{{/*
+true when the eSignet client (partnerPortal.subjectAuth) is needed: by the
+partner portal's national-ID step, the beneficiary API auth, the consent login.
+Root context.
+*/}}
+{{- define "consentManager.esignetClientOn" -}}
+{{- if or (include "consentManager.subjectAuthOn" .) (include "consentManager.nationalIdLoginOn" .) }}true{{ end -}}
+{{- end -}}
+
+{{/*
+The redirect URIs registered for the eSignet client, as JSON. Root context.
+*/}}
+{{- define "consentManager.esignetRedirectUris" -}}
+{{- $uris := list -}}
+{{- if include "consentManager.subjectAuthOn" . }}{{ $uris = append $uris (tpl .Values.partnerPortal.subjectAuth.redirectUri .) }}{{ end -}}
+{{- if include "consentManager.beneAuthOn" . }}{{ $uris = append $uris (tpl .Values.beneApiAuth.redirectUri .) }}{{ end -}}
+{{- if include "consentManager.consentLoginOn" . }}{{ $uris = append $uris (tpl .Values.consentLogin.redirectUri .) }}{{ end -}}
+{{- toJson $uris -}}
+{{- end -}}
+
+{{/*
+true when an extraApis entry is deployed: enabled, or the beneficiary api with
+a national-ID login on (beneficiary API auth and/or consent login). Call with (dict "api" <entry> "root" $).
+*/}}
+{{- define "consentManager.extraApiOn" -}}
+{{- if or .api.enabled (and (eq (toString .api.apiAudience) "beneficiary") (include "consentManager.nationalIdLoginOn" .root)) }}true{{ end -}}
+{{- end -}}
+
+{{/*
+National-ID login env for the BENEFICIARY api: the eSignet client of
+partnerPortal.subjectAuth (its redirect URIs are the bene API's callbacks), then
+the beneficiary API auth (beneApiAuth) and the consent login (consentLogin)
+settings, each when on. Empty when both are off. Root context.
+*/}}
+{{- define "consentManager.beneAuthEnv" -}}
+{{- if include "consentManager.nationalIdLoginOn" . }}
+{{- $sa := .Values.partnerPortal.subjectAuth -}}
+- name: CONSENT_MANAGER_SUBJECT_AUTH_ENABLED
+  value: "true"
+- name: CONSENT_MANAGER_SUBJECT_AUTH_PROVIDER_NAME
+  value: {{ $sa.providerName | quote }}
+- name: CONSENT_MANAGER_SUBJECT_AUTH_DISCOVERY_URL
+  value: {{ tpl $sa.discoveryUrl . | quote }}
+- name: CONSENT_MANAGER_SUBJECT_AUTH_CLIENT_ID
+  value: {{ tpl $sa.clientId . | quote }}
+- name: CONSENT_MANAGER_SUBJECT_AUTH_ACR_VALUES
+  value: {{ $sa.acrValues | quote }}
+- name: CONSENT_MANAGER_SUBJECT_AUTH_ID_TYPES
+  value: {{ $sa.idTypes | toJson | quote }}
+- name: CONSENT_MANAGER_SUBJECT_AUTH_PRIVATE_KEY_PATH
+  value: {{ printf "%s/client.pem" $sa.keyMountPath | quote }}
+{{- end }}
+{{- if include "consentManager.beneAuthOn" . }}
+{{- $b := .Values.beneApiAuth -}}
+{{- $returnUrls := list -}}
+{{- range $b.allowedReturnUrls }}{{ $returnUrls = append $returnUrls (tpl . $) }}{{ end }}
+- name: CONSENT_MANAGER_BENE_AUTH_ENABLED
+  value: "true"
+- name: CONSENT_MANAGER_BENE_AUTH_REDIRECT_URI
+  value: {{ tpl $b.redirectUri . | quote }}
+- name: CONSENT_MANAGER_BENE_AUTH_ALLOWED_RETURN_URLS
+  value: {{ $returnUrls | toJson | quote }}
+- name: CONSENT_MANAGER_BENE_AUTH_TOKEN_TTL_SECONDS
+  value: {{ $b.tokenTtlSeconds | quote }}
+- name: CONSENT_MANAGER_BENE_AUTH_EXCHANGE_TTL_SECONDS
+  value: {{ $b.exchangeTtlSeconds | quote }}
+- name: CONSENT_MANAGER_BENE_AUTH_SUBJECT_ID_TYPE
+  value: {{ $b.subjectIdType | quote }}
+{{- end }}
+{{- if include "consentManager.consentLoginOn" . }}
+{{- $c := .Values.consentLogin -}}
+{{- $returnUrls := list -}}
+{{- range $c.allowedReturnUrls }}{{ $returnUrls = append $returnUrls (tpl . $) }}{{ end }}
+- name: CONSENT_MANAGER_CONSENT_LOGIN_ENABLED
+  value: "true"
+- name: CONSENT_MANAGER_CONSENT_LOGIN_REDIRECT_URI
+  value: {{ tpl $c.redirectUri . | quote }}
+- name: CONSENT_MANAGER_CONSENT_LOGIN_ALLOWED_RETURN_URLS
+  value: {{ $returnUrls | toJson | quote }}
+- name: CONSENT_MANAGER_CONSENT_LOGIN_TOKEN_TTL_SECONDS
+  value: {{ $c.tokenTtlSeconds | quote }}
+- name: CONSENT_MANAGER_CONSENT_LOGIN_EXCHANGE_TTL_SECONDS
+  value: {{ $c.exchangeTtlSeconds | quote }}
+- name: CONSENT_MANAGER_CONSENT_LOGIN_SUBJECT_ID_TYPE
+  value: {{ $c.subjectIdType | quote }}
+{{- end }}
+{{- end -}}
+
 {{- define "consentManagerApi.envVars" -}}
 {{- range $key, $value := .Values.envVars }}
 - name: {{ $key }}

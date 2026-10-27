@@ -1,0 +1,39 @@
+# CI deploy identity for upgrading the dev `commons-services` release.
+# Namespace `commons` only. Apply on the new dev VM:
+#   sudo -E /var/lib/rancher/rke2/bin/kubectl apply -f consent-commons-rbac.yaml
+#
+# This is broad on purpose: a Helm upgrade of commons-services must be able to
+# touch every kind the chart renders (ConfigMap, Secret, Service, ServiceAccount,
+# PVC, Deployment, Job, CronJob, Role, RoleBinding, ServiceMonitor, VirtualService)
+# and read/write Helm's release Secrets. That includes reading Secrets in
+# `commons`, so treat the Jenkins credential built from it as sensitive. It
+# cannot touch other namespaces, Nodes, ClusterRoles or CRDs. The pipeline's
+# manifest guard (ci/manifest_guard.py) is what keeps a build from changing
+# anything but the Consent Manager images.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: consent-ci, namespace: commons}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: consent-ci, namespace: commons}
+rules:
+  - apiGroups: ["", "apps", "batch", "autoscaling", "networking.k8s.io", "policy",
+                "networking.istio.io", "security.istio.io", "rbac.authorization.k8s.io",
+                "monitoring.coreos.com"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: consent-ci, namespace: commons}
+subjects: [{kind: ServiceAccount, name: consent-ci, namespace: commons}]
+roleRef: {kind: Role, name: consent-ci, apiGroup: rbac.authorization.k8s.io}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: consent-ci-token
+  namespace: commons
+  annotations: {kubernetes.io/service-account.name: consent-ci}
+type: kubernetes.io/service-account-token

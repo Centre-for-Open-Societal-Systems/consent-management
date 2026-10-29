@@ -22,7 +22,8 @@ if [ "$EXTRA" != "-" ] && [ -n "$EXTRA" ]; then
     TAGS+=(-t "${ECR_REGISTRY}/${REPO}:${EXTRA}")
 fi
 
-docker build "${ARGS[@]}" -f "$DOCKERFILE" "${TAGS[@]}" "$CONTEXT"
+# ${ARGS[@]+...} keeps an empty array legal under `set -u` on bash < 4.4
+docker build ${ARGS[@]+"${ARGS[@]}"} -f "$DOCKERFILE" "${TAGS[@]}" "$CONTEXT"
 docker push "$IMAGE"
 if [ "$EXTRA" != "-" ] && [ -n "$EXTRA" ]; then
     docker push "${ECR_REGISTRY}/${REPO}:${EXTRA}"

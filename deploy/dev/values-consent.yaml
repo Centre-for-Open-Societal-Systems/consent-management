@@ -1,0 +1,31 @@
+# Consent Manager images for the dev commons-services release (OAN chart
+# openg2p-commons-services, namespace `commons`). Our own images from ECR
+# replace the stock ones.
+#
+# Dev runs the `develop` tag. The Jenkins deploy overrides each tag with the
+# commit it just built and its digest (dev-<commit12>@sha256:...), so a rollout
+# always happens and a rollback returns to an exact image. Staging and UAT do
+# not use this file; they pin a release version (see deploy/README).
+#
+# Everything else in the release (hostnames, secrets, Keycloak, databases) is
+# kept as installed: the pipeline upgrades with --reuse-values.
+openg2p-consent-manager:
+  consentManagerApi:
+    image:
+      repository: 379220350808.dkr.ecr.ap-south-1.amazonaws.com/openg2p/commons/consent-manager-api
+      tag: develop
+      pullPolicy: Always
+  ui:
+    image:
+      repository: 379220350808.dkr.ecr.ap-south-1.amazonaws.com/openg2p/commons/consent-manager-ui
+      tag: develop
+      pullPolicy: Always
+  sanity:
+    image:
+      repository: 379220350808.dkr.ecr.ap-south-1.amazonaws.com/openg2p/commons/consent-manager-sanity
+      tag: develop
+      pullPolicy: Always
+consentPartnerPortal:
+  enabled: true
+  image:
+    repository: 379220350808.dkr.ecr.ap-south-1.amazonaws.com/oan/commons/consent-partner-portal

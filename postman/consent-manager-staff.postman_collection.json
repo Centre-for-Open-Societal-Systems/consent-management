@@ -1,0 +1,482 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+    "name": "Consent Manager - Staff Flow",
+    "description": "Postman collection for Staff operations via Keycloak (staff realm) and Consent Manager Staff API: metadata, partner management, policy governance, assisted consent verifications, decisions audit log, and AWE tasks.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Authentication (Staff Realm)",
+      "item": [
+        {
+          "name": "1a. Get Staff Token (Admin & Approver)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () {",
+                  "        pm.response.to.have.status(200);",
+                  "    });",
+                  "    var json = pm.response.json();",
+                  "    pm.test('Has access_token', function () {",
+                  "        pm.expect(json.access_token).to.be.ok;",
+                  "    });",
+                  "    pm.environment.set('staff_token', json.access_token);",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password",
+                  "type": "text"
+                },
+                {
+                  "key": "client_id",
+                  "value": "{{staff_client_id}}",
+                  "type": "text"
+                },
+                {
+                  "key": "username",
+                  "value": "{{staff_username}}",
+                  "type": "text"
+                },
+                {
+                  "key": "password",
+                  "value": "{{staff_password}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{keycloak_url}}/realms/staff/protocol/openid-connect/token",
+              "host": [
+                "{{keycloak_url}}"
+              ],
+              "path": [
+                "realms",
+                "staff",
+                "protocol",
+                "openid-connect",
+                "token"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Metadata & Health",
+      "item": [
+        {
+          "name": "2a. Get Consent Manager Metadata",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () {",
+                  "        pm.response.to.have.status(200);",
+                  "    });",
+                  "    var json = pm.response.json();",
+                  "    pm.test('Metadata has known controllers', function () {",
+                  "        pm.expect(json.known_controller_ids).to.be.an('array').that.includes('farmer_registry');",
+                  "    });",
+                  "    pm.test('Metadata has known data scopes', function () {",
+                  "        pm.expect(json.known_data_scopes).to.be.an('array').that.includes('farmer_personal_details');",
+                  "    });",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{cm_url}}/consent/v1/meta",
+              "host": [
+                "{{cm_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "meta"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Partner Management",
+      "item": [
+        {
+          "name": "3a. List Partner Bindings",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () {",
+                  "        pm.response.to.have.status(200);",
+                  "    });",
+                  "    var json = pm.response.json();",
+                  "    pm.test('Returns list of partners', function () {",
+                  "        pm.expect(json).to.be.an('array');",
+                  "        pm.expect(json.length).to.be.at.least(1);",
+                  "    });",
+                  "    if (json.length > 0 && json[0].id) {",
+                  "        pm.environment.set('partner_binding_id', json[0].id);",
+                  "    }",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{cm_url}}/consent/v1/partners",
+              "host": [
+                "{{cm_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "partners"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3b. Get Partner Binding Detail",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () {",
+                  "        pm.response.to.have.status(200);",
+                  "    });",
+                  "    var json = pm.response.json();",
+                  "    pm.test('Partner ID matches', function () {",
+                  "        pm.expect(json.id).to.eql(pm.environment.get('partner_binding_id'));",
+                  "    });",
+                  "    pm.test('Partner status is active', function () {",
+                  "        pm.expect(json.status).to.eql('active');",
+                  "    });",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{cm_url}}/consent/v1/partners/{{partner_binding_id}}",
+              "host": [
+                "{{cm_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "partners",
+                "{{partner_binding_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Policy Governance",
+      "item": [
+        {
+          "name": "4a. Get Partner Policy",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () {",
+                  "        pm.response.to.have.status(200);",
+                  "    });",
+                  "    var json = pm.response.json();",
+                  "    pm.test('Policy status is active', function () {",
+                  "        pm.expect(json.status).to.eql('active');",
+                  "    });",
+                  "    pm.test('Policy has allowed scopes', function () {",
+                  "        pm.expect(json.allowed_data_scopes).to.be.an('array').that.includes('farmer_personal_details');",
+                  "    });",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{cm_url}}/consent/v1/partners/{{partner_binding_id}}/policy",
+              "host": [
+                "{{cm_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "partners",
+                "{{partner_binding_id}}",
+                "policy"
+              ]
+            }
+          }
+        },
+        {
+          "name": "4b. Update Partner Policy (OTP Method & Scopes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200 or 201', function () {",
+                  "        pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "    });",
+                  "    var json = pm.response.json();",
+                  "    pm.test('Updated policy status is active', function () {",
+                  "        pm.expect(json.status).to.eql('active');",
+                  "    });",
+                  "    pm.test('Updated policy consent_method is otp', function () {",
+                  "        pm.expect(json.consent_method).to.eql('otp');",
+                  "    });",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"allowed_data_scopes\": [\"farmer_personal_details\"],\n  \"allowed_purposes\": [\"loan_origination\", \"credit-assessment\"],\n  \"allowed_subject_id_types\": [\"national_id\"],\n  \"allowed_signing_algs\": [\"RS256\"],\n  \"fetch_type\": \"oneshot\",\n  \"consent_method\": \"otp\"\n}"
+            },
+            "url": {
+              "raw": "{{cm_url}}/consent/v1/partners/{{partner_binding_id}}/policy",
+              "host": [
+                "{{cm_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "partners",
+                "{{partner_binding_id}}",
+                "policy"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Verifications Inbox",
+      "item": [
+        {
+          "name": "5a. List Verification Requests",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () {",
+                  "        pm.response.to.have.status(200);",
+                  "    });",
+                  "    var json = pm.response.json();",
+                  "    pm.test('Has total and items list', function () {",
+                  "        pm.expect(json).to.have.property('total');",
+                  "        pm.expect(json.items).to.be.an('array');",
+                  "    });",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{cm_url}}/consent/v1/verifications",
+              "host": [
+                "{{cm_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "verifications"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Decisions Log & Audit",
+      "item": [
+        {
+          "name": "6a. List Decisions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () {",
+                  "        pm.response.to.have.status(200);",
+                  "    });",
+                  "    var json = pm.response.json();",
+                  "    pm.test('Decisions is an array', function () {",
+                  "        pm.expect(json).to.be.an('array');",
+                  "    });",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{cm_url}}/consent/v1/decisions",
+              "host": [
+                "{{cm_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Approvals (AWE)",
+      "item": [
+        {
+          "name": "7a. List Approver Tasks",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () {",
+                  "        pm.response.to.have.status(200);",
+                  "    });",
+                  "    var json = pm.response.json();",
+                  "    pm.test('Tasks response is valid', function () {",
+                  "        pm.expect(json).to.be.ok;",
+                  "    });",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staff_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{cm_url}}/consent/v1/awe/tasks",
+              "host": [
+                "{{cm_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "awe",
+                "tasks"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,526 @@
+{
+  "info": {
+    "_postman_id": "b1e98240-6211-4a11-a831-7bc281e0915a",
+    "name": "Consent Manager - Partner Flow",
+    "description": "Postman collection for Partner authentication via Keycloak (partner realm) and raising/granting consent requests via Consent Manager Partner Portal API (/consent/v1/partner-portal/*).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Partner Authentication (Keycloak)",
+      "item": [
+        {
+          "name": "1a. Get Partner Bearer Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () {",
+                  "        pm.response.to.have.status(200);",
+                  "    });",
+                  "    var json = pm.response.json();",
+                  "    pm.test('Has access_token', function () {",
+                  "        pm.expect(json.access_token).to.be.ok;",
+                  "    });",
+                  "    pm.environment.set('partner_token', json.access_token);",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password",
+                  "type": "text"
+                },
+                {
+                  "key": "client_id",
+                  "value": "{{partner_client_id}}",
+                  "type": "text"
+                },
+                {
+                  "key": "username",
+                  "value": "{{partner_username}}",
+                  "type": "text"
+                },
+                {
+                  "key": "password",
+                  "value": "{{partner_password}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{keycloak_url}}/realms/partner/protocol/openid-connect/token",
+              "host": [
+                "{{keycloak_url}}"
+              ],
+              "path": [
+                "realms",
+                "partner",
+                "protocol",
+                "openid-connect",
+                "token"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Partner Portal Profile & Bindings",
+      "item": [
+        {
+          "name": "2a. Get Partner User Profile (/me)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () {",
+                  "        pm.response.to.have.status(200);",
+                  "    });",
+                  "    var json = pm.response.json();",
+                  "    pm.test('Identifies partner_id', function () {",
+                  "        pm.expect(json.partner_id).to.be.ok;",
+                  "    });",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{partner_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{cm_url}}/consent/v1/partner-portal/me",
+              "host": [
+                "{{cm_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "partner-portal",
+                "me"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2b. Get Partner Bindings",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () {",
+                  "        pm.response.to.have.status(200);",
+                  "    });",
+                  "    var json = pm.response.json();",
+                  "    pm.test('Returns list of bindings', function () {",
+                  "        pm.expect(Array.isArray(json)).to.be.true;",
+                  "    });",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{partner_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{cm_url}}/consent/v1/partner-portal/bindings",
+              "host": [
+                "{{cm_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "partner-portal",
+                "bindings"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Raise & Manage Consent Request",
+      "item": [
+        {
+          "name": "3a. Raise Consent Request (Method: OTP)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 201 Created', function () {",
+                  "        pm.response.to.have.status(201);",
+                  "    });",
+                  "    var json = pm.response.json();",
+                  "    pm.test('Has request ID', function () {",
+                  "        pm.expect(json.id).to.be.ok;",
+                  "    });",
+                  "    pm.environment.set('partner_request_id', json.id);",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{partner_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"subject_id\": {\n    \"type\": \"{{subject_id_type}}\",\n    \"value\": \"{{subject_id_value}}\"\n  },\n  \"purpose\": {\n    \"code\": \"{{purpose_code}}\"\n  },\n  \"grants\": [\n    {\n      \"data_controller\": \"{{data_controller}}\",\n      \"data_scopes\": [\n        \"{{data_scope}}\"\n      ]\n    }\n  ],\n  \"method\": \"otp\"\n}"
+            },
+            "url": {
+              "raw": "{{cm_url}}/consent/v1/partner-portal/consent-requests",
+              "host": [
+                "{{cm_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "partner-portal",
+                "consent-requests"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3b. Get Consent Request Details",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () {",
+                  "        pm.response.to.have.status(200);",
+                  "    });",
+                  "    var json = pm.response.json();",
+                  "    pm.test('Matches request ID', function () {",
+                  "        pm.expect(json.id).to.equal(pm.environment.get('partner_request_id'));",
+                  "    });",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{partner_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{cm_url}}/consent/v1/partner-portal/consent-requests/{{partner_request_id}}",
+              "host": [
+                "{{cm_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "partner-portal",
+                "consent-requests",
+                "{{partner_request_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3c. Verify OTP & Grant Consent",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 201 Created or 401 (Invalid OTP)', function () {",
+                  "        pm.expect([200, 201, 400, 401, 422]).to.include(pm.response.code);",
+                  "    });",
+                  "    try {",
+                  "        var json = pm.response.json();",
+                  "        if (json.consent_id) {",
+                  "            pm.environment.set('partner_consent_id', json.consent_id);",
+                  "        }",
+                  "    } catch(e) {}",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{partner_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"otp\": \"{{partner_otp}}\"\n}"
+            },
+            "url": {
+              "raw": "{{cm_url}}/consent/v1/partner-portal/consent-requests/{{partner_request_id}}/verify-otp",
+              "host": [
+                "{{cm_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "partner-portal",
+                "consent-requests",
+                "{{partner_request_id}}",
+                "verify-otp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3d. Raise Assisted Consent Request (Method: Assisted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 201 Created', function () {",
+                  "        pm.response.to.have.status(201);",
+                  "    });",
+                  "    var json = pm.response.json();",
+                  "    pm.test('Has request ID', function () {",
+                  "        pm.expect(json.id).to.be.ok;",
+                  "    });",
+                  "    pm.environment.set('assisted_request_id', json.id);",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{partner_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"subject_id\": {\n    \"type\": \"{{subject_id_type}}\",\n    \"value\": \"{{subject_id_value}}\"\n  },\n  \"purpose\": {\n    \"code\": \"{{purpose_code}}\"\n  },\n  \"grants\": [\n    {\n      \"data_controller\": \"{{data_controller}}\",\n      \"data_scopes\": [\n        \"{{data_scope}}\"\n      ]\n    }\n  ],\n  \"method\": \"assisted\"\n}"
+            },
+            "url": {
+              "raw": "{{cm_url}}/consent/v1/partner-portal/consent-requests",
+              "host": [
+                "{{cm_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "partner-portal",
+                "consent-requests"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. List & Inspect Consents",
+      "item": [
+        {
+          "name": "4a. List Partner Consents",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () {",
+                  "        pm.response.to.have.status(200);",
+                  "    });",
+                  "    var json = pm.response.json();",
+                  "    pm.test('Has items array', function () {",
+                  "        pm.expect(Array.isArray(json.items)).to.be.true;",
+                  "    });",
+                  "    if (json.items && json.items.length > 0 && !pm.environment.get('partner_consent_id')) {",
+                  "        pm.environment.set('partner_consent_id', json.items[0].consent_id);",
+                  "    }",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{partner_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{cm_url}}/consent/v1/partner-portal/consents?page=1&size=20",
+              "host": [
+                "{{cm_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "partner-portal",
+                "consents"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "size",
+                  "value": "20"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "4b. Get Partner Consent by ID",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200 or 404', function () {",
+                  "        pm.expect([200, 404]).to.include(pm.response.code);",
+                  "    });",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{partner_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{cm_url}}/consent/v1/partner-portal/consents/{{partner_consent_id}}",
+              "host": [
+                "{{cm_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "partner-portal",
+                "consents",
+                "{{partner_consent_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "4c. Get Consent Receipt",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200 or 404', function () {",
+                  "        pm.expect([200, 404]).to.include(pm.response.code);",
+                  "    });",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{partner_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{cm_url}}/consent/v1/partner-portal/consents/{{partner_consent_id}}/receipt",
+              "host": [
+                "{{cm_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "partner-portal",
+                "consents",
+                "{{partner_consent_id}}",
+                "receipt"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

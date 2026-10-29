@@ -1,0 +1,752 @@
+{
+  "info": {
+    "_postman_id": "c8432a90-3498-46dc-a091-bf96350f5891",
+    "name": "Consent Manager - Beneficiary (IAM Portal + eSignet)",
+    "description": "Runnable collection covering the full OpenG2P Beneficiary flow:\n1. Farmer initiates login via iam-bene-portal-api (:8030)\n2. Farmer completes OTP authentication via eSignet\n3. iam-bene-portal-api exchanges code and issues session / eSignet tokens\n4. Farmer calls Consent Manager Beneficiary API (:8033) /consent/v1/my/* using the token.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Farmer Login via IAM Bene Portal (iam-bene-portal-api + eSignet)",
+      "item": [
+        {
+          "name": "1a. Get Login Providers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "    var data = pm.response.json();",
+                  "    pm.test('Has loginProviders', function () { pm.expect(data.loginProviders.length).to.be.above(0); });",
+                  "    var p = data.loginProviders[0];",
+                  "    pm.environment.set('provider_id', p.id);",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{iam_bene_url}}/auth/get_login_providers",
+              "host": [
+                "{{iam_bene_url}}"
+              ],
+              "path": [
+                "auth",
+                "get_login_providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1b. Start Login Redirect (IAM -> eSignet)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 307', function () { pm.expect(pm.response.code).to.be.oneOf([302, 307]); });",
+                  "    var loc = pm.response.headers.get('Location') || '';",
+                  "    pm.test('Redirects to eSignet authorize', function () { pm.expect(loc).to.include('/authorize'); });",
+                  "    var q = {};",
+                  "    if (loc.indexOf('?') !== -1) {",
+                  "        loc.split('?')[1].split('&').forEach(function (part) {",
+                  "            var idx = part.indexOf('=');",
+                  "            if (idx !== -1) {",
+                  "                q[part.slice(0, idx)] = decodeURIComponent(part.slice(idx + 1).replace(/\\+/g, ' '));",
+                  "            }",
+                  "        });",
+                  "    }",
+                  "    pm.environment.set('iam_client_id', q.client_id || 'openg2p-beneficiary-esignet');",
+                  "    pm.environment.set('iam_redirect_uri', q.redirect_uri || 'http://localhost:3030/api/portal/auth/callback');",
+                  "    pm.environment.set('iam_state', q.state || '');",
+                  "    pm.environment.set('iam_nonce', q.nonce || '');",
+                  "    pm.environment.set('iam_code_challenge', q.code_challenge || '');",
+                  "    pm.environment.set('iam_code_challenge_method', q.code_challenge_method || 'S256');",
+                  "    pm.environment.set('iam_acr_values', q.acr_values || 'mosip:idp:acr:generated-code');",
+                  "    pm.environment.set('iam_scope', q.scope || 'openid profile email');",
+                  "    pm.environment.set('iam_claims', q.claims || '{}');",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{iam_bene_url}}/auth/get_login_provider_redirect/{{provider_id}}?redirect_uri={{iam_redirect_target}}",
+              "host": [
+                "{{iam_bene_url}}"
+              ],
+              "path": [
+                "auth",
+                "get_login_provider_redirect",
+                "{{provider_id}}"
+              ],
+              "query": [
+                {
+                  "key": "redirect_uri",
+                  "value": "{{iam_redirect_target}}"
+                }
+              ]
+            }
+          },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          }
+        },
+        {
+          "name": "1c. Get eSignet CSRF Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "    var data = pm.response.json();",
+                  "    pm.environment.set('xsrf', data.token);",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{esignet_url}}/csrf/token",
+              "host": [
+                "{{esignet_url}}"
+              ],
+              "path": [
+                "csrf",
+                "token"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1d. eSignet OAuth Details (using IAM parameters)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.environment.set('now', new Date().toISOString());"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "    var b = pm.response.json();",
+                  "    if (b.response) {",
+                  "        pm.environment.set('txn', b.response.transactionId);",
+                  "        var hash = CryptoJS.SHA256(JSON.stringify(b.response)).toString(CryptoJS.enc.Base64).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');",
+                  "        pm.environment.set('oauth_hash', hash);",
+                  "    }",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestTime\": \"{{now}}\",\n  \"request\": {\n    \"clientId\": \"{{iam_client_id}}\",\n    \"scope\": \"{{iam_scope}}\",\n    \"responseType\": \"code\",\n    \"redirectUri\": \"{{iam_redirect_uri}}\",\n    \"display\": \"popup\",\n    \"prompt\": \"login\",\n    \"acrValues\": \"{{iam_acr_values}}\",\n    \"nonce\": \"{{iam_nonce}}\",\n    \"state\": \"{{iam_state}}\",\n    \"claimsLocales\": \"en\",\n    \"uiLocales\": \"en\",\n    \"claims\": {\n      \"userinfo\": {\n        \"name\": {\n          \"essential\": false\n        }\n      },\n      \"id_token\": {}\n    },\n    \"codeChallenge\": \"{{iam_code_challenge}}\",\n    \"codeChallengeMethod\": \"{{iam_code_challenge_method}}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{esignet_url}}/authorization/v2/oauth-details",
+              "host": [
+                "{{esignet_url}}"
+              ],
+              "path": [
+                "authorization",
+                "v2",
+                "oauth-details"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1e. eSignet Send OTP",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.environment.set('now', new Date().toISOString());"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "    var b = pm.response.json();",
+                  "    if (!b.response) {",
+                  "        var e = (b.errors || [])[0] || {};",
+                  "        throw new Error('eSignet send-otp error: ' + (e.errorCode || '?') + ' - ' + (e.errorMessage || JSON.stringify(b)));",
+                  "    }",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "oauth-details-key",
+                "value": "{{txn}}"
+              },
+              {
+                "key": "oauth-details-hash",
+                "value": "{{oauth_hash}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestTime\": \"{{now}}\",\n  \"request\": {\n    \"transactionId\": \"{{txn}}\",\n    \"individualId\": \"{{esignet_individual_id}}\",\n    \"otpChannels\": [\n      \"phone\"\n    ],\n    \"captchaToken\": \"x\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{esignet_url}}/authorization/send-otp",
+              "host": [
+                "{{esignet_url}}"
+              ],
+              "path": [
+                "authorization",
+                "send-otp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1f. eSignet Authenticate OTP",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.environment.set('now', new Date().toISOString());"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "    var b = pm.response.json();",
+                  "    if (!b.response) {",
+                  "        var e = (b.errors || [])[0] || {};",
+                  "        throw new Error('eSignet authenticate error: ' + (e.errorCode || '?') + ' - ' + (e.errorMessage || JSON.stringify(b)));",
+                  "    }",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "oauth-details-key",
+                "value": "{{txn}}"
+              },
+              {
+                "key": "oauth-details-hash",
+                "value": "{{oauth_hash}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestTime\": \"{{now}}\",\n  \"request\": {\n    \"transactionId\": \"{{txn}}\",\n    \"individualId\": \"{{esignet_individual_id}}\",\n    \"challengeList\": [\n      {\n        \"authFactorType\": \"OTP\",\n        \"challenge\": \"{{esignet_otp}}\",\n        \"format\": \"alpha-numeric\"\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{esignet_url}}/authorization/v2/authenticate",
+              "host": [
+                "{{esignet_url}}"
+              ],
+              "path": [
+                "authorization",
+                "v2",
+                "authenticate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1g. eSignet Authorize Claims & Get Code",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.environment.set('now', new Date().toISOString());"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "    var b = pm.response.json();",
+                  "    if (!b.response) {",
+                  "        var e = (b.errors || [])[0] || {};",
+                  "        throw new Error('eSignet error: ' + (e.errorCode || '?') + ' - ' + (e.errorMessage || JSON.stringify(b)));",
+                  "    }",
+                  "    pm.test('Received auth code from eSignet', function () { pm.expect(b.response.code).to.be.ok; });",
+                  "    pm.environment.set('auth_code', b.response.code);",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-XSRF-TOKEN",
+                "value": "{{xsrf}}"
+              },
+              {
+                "key": "oauth-details-key",
+                "value": "{{txn}}"
+              },
+              {
+                "key": "oauth-details-hash",
+                "value": "{{oauth_hash}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestTime\": \"{{now}}\",\n  \"request\": {\n    \"transactionId\": \"{{txn}}\",\n    \"acceptedClaims\": [\n      \"name\"\n    ],\n    \"permittedAuthorizeScopes\": []\n  }\n}"
+            },
+            "url": {
+              "raw": "{{esignet_url}}/authorization/auth-code",
+              "host": [
+                "{{esignet_url}}"
+              ],
+              "path": [
+                "authorization",
+                "auth-code"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1h. IAM Callback (Exchange Code & Set Session)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 302 or 307', function () { pm.expect(pm.response.code).to.be.oneOf([302, 307]); });",
+                  "    var setCookies = pm.response.headers.filter(function(h) { return h.key.toLowerCase() === 'set-cookie'; }).map(function(h) { return h.value; });",
+                  "    var findCookie = function(n) { var c = setCookies.find(function(v) { return v.indexOf(n + '=') === 0; }); return c ? c.split(';')[0].slice(n.length + 1) : ''; };",
+                  "    var idToken = findCookie('X-ID-Token');",
+                  "    var accessToken = findCookie('X-Access-Token');",
+                  "    if (idToken) { pm.environment.set('bene_token', idToken); }",
+                  "    if (accessToken) { pm.environment.set('bene_access_token', accessToken); }",
+                  "    pm.environment.set('iam_cookie_header', setCookies.map(function(c) { return c.split(';')[0]; }).join('; '));",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{iam_bene_url}}/auth/callback?state={{iam_state}}&code={{auth_code}}",
+              "host": [
+                "{{iam_bene_url}}"
+              ],
+              "path": [
+                "auth",
+                "callback"
+              ],
+              "query": [
+                {
+                  "key": "state",
+                  "value": "{{iam_state}}"
+                },
+                {
+                  "key": "code",
+                  "value": "{{auth_code}}"
+                }
+              ]
+            }
+          },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          }
+        },
+        {
+          "name": "1i. Verify User Profile on IAM Portal",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200 or 401', function () { pm.expect([200, 401]).to.include(pm.response.code); });",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "{{iam_cookie_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{iam_bene_url}}/auth/get_user_profile",
+              "host": [
+                "{{iam_bene_url}}"
+              ],
+              "path": [
+                "auth",
+                "get_user_profile"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Beneficiary Consents (/consent/v1/my/*)",
+      "item": [
+        {
+          "name": "2a. List My Consents",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "    var res = pm.response.json();",
+                  "    if (res.items && res.items.length > 0) {",
+                  "        pm.environment.set('consent_id', res.items[0].consent_id);",
+                  "    }",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{cm_bene_url}}/consent/v1/my/consents?page=1&size=20",
+              "host": [
+                "{{cm_bene_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "my",
+                "consents"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "size",
+                  "value": "20"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "2b. Get My Consent by ID",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200 or 404', function () { pm.expect([200, 404]).to.include(pm.response.code); });",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{cm_bene_url}}/consent/v1/my/consents/{{consent_id}}",
+              "host": [
+                "{{cm_bene_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "my",
+                "consents",
+                "{{consent_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2c. Get My Consent Receipt",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200 or 404', function () { pm.expect([200, 404]).to.include(pm.response.code); });",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{cm_bene_url}}/consent/v1/my/receipts/{{receipt_id}}",
+              "host": [
+                "{{cm_bene_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "my",
+                "receipts",
+                "{{receipt_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2d. Revoke / Withdraw My Consent",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200 or 404', function () { pm.expect([200, 404]).to.include(pm.response.code); });",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"User requested withdrawal from beneficiary portal\"\n}"
+            },
+            "url": {
+              "raw": "{{cm_bene_url}}/consent/v1/my/consents/{{consent_id}}/revoke",
+              "host": [
+                "{{cm_bene_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "my",
+                "consents",
+                "{{consent_id}}",
+                "revoke"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Consent Lifecycle (/consent/v1/consent-requests)",
+      "item": [
+        {
+          "name": "3a. Create Consent Request",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200, 201, 400 or 404', function () { pm.expect([200, 201, 400, 404]).to.include(pm.response.code); });",
+                  "    try {",
+                  "        var d = pm.response.json();",
+                  "        if (d && d.id) { pm.environment.set('request_id', d.id); }",
+                  "    } catch(e) {}",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"subject_id\": {\n    \"type\": \"national_id\",\n    \"value\": \"{{esignet_individual_id}}\"\n  },\n  \"partner_id\": \"partner-demo-1\",\n  \"purpose\": {\n    \"code\": \"loan_origination\"\n  },\n  \"requested_scopes\": [\n    \"farmer_personal_details\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{cm_bene_url}}/consent/v1/consent-requests",
+              "host": [
+                "{{cm_bene_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "consent-requests"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3b. Get Consent Request",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "(function() {",
+                  "    pm.test('Status is 200 or 404', function () { pm.expect([200, 404]).to.include(pm.response.code); });",
+                  "})();"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bene_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{cm_bene_url}}/consent/v1/consent-requests/{{request_id}}",
+              "host": [
+                "{{cm_bene_url}}"
+              ],
+              "path": [
+                "consent",
+                "v1",
+                "consent-requests",
+                "{{request_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,10 +1,12 @@
 pipeline {
-    // The agent that reaches the dev cluster (same one the other registries use).
-    agent { label 'vpn-agent2' }
+    // The on-demand agent that reaches the dev cluster (same one the other registries use).
+    agent { label 'oan-ci-deploy' }
 
     options {
         // Overlapping runs collide on the helm upgrade ("another operation in progress").
         disableConcurrentBuilds()
+        // Agents are on-demand machines: if one is lost mid-build, run the build again.
+        retry(count: 2, conditions: [agent(), nonresumable()])
     }
 
     environment {

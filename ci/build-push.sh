@@ -22,8 +22,11 @@ if [ "$EXTRA" != "-" ] && [ -n "$EXTRA" ]; then
     TAGS+=(-t "${ECR_REGISTRY}/${REPO}:${EXTRA}")
 fi
 
-# ${ARGS[@]+...} keeps an empty array legal under `set -u` on bash < 4.4
-docker build ${ARGS[@]+"${ARGS[@]}"} -f "$DOCKERFILE" "${TAGS[@]}" "$CONTEXT"
+# Agents start with an empty Docker cache: reuse layers from the `develop` image in ECR
+# (inline cache metadata, written by every build). A missing cache image is not an error.
+ARGS+=(--build-arg BUILDKIT_INLINE_CACHE=1 --cache-from "${ECR_REGISTRY}/${REPO}:develop")
+
+docker build "${ARGS[@]}" -f "$DOCKERFILE" "${TAGS[@]}" "$CONTEXT"
 docker push "$IMAGE"
 if [ "$EXTRA" != "-" ] && [ -n "$EXTRA" ]; then
     docker push "${ECR_REGISTRY}/${REPO}:${EXTRA}"

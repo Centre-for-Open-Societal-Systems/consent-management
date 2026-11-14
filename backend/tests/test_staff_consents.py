@@ -10,7 +10,7 @@ from test_assisted_consent import (  # noqa: F401 (fixtures)
 )
 from test_consent_lookup import lookup, portal_consent
 from test_exchange import cfg, exchange_on  # noqa: F401 (fixtures)
-from test_use_case_consent import bank, composite, exchange  # noqa: F401 (fixtures)
+from test_template_consent import bank, exchange, templates  # noqa: F401 (fixtures)
 
 CONSENTS = "/consent/v1/consents"
 

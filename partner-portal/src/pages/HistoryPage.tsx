@@ -86,7 +86,7 @@ export default function HistoryPage() {
                   </td>
                   <td>
                     {purposeLabel(r.purpose)}
-                    {r.use_case && <div className="muted" style={{ fontSize: 12 }}>{r.use_case}</div>}
+                    {r.template && <div className="muted" style={{ fontSize: 12 }}>{r.template}</div>}
                   </td>
                   <td className="muted">{r.grants.map((g) => g.data_controller).join(", ")}</td>
                   <td className="muted">{r.created_by ?? "—"}</td>

@@ -3,31 +3,50 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../api/client";
 import { useAccess, useRequestSettings } from "../api/hooks";
-import type { ConsentRequestCreate } from "../api/types";
+import type { ConsentRequestCreate, ConsentTemplate } from "../api/types";
 import { dayEnd, dayStart, today } from "../format";
 import { CodeSelect, codeLabels } from "./FormControls";
 import { ErrorNotice } from "./Status";
-import { UseCaseFacts } from "./UseCaseFacts";
+import { TemplateFacts } from "./TemplateFacts";
 
 const BASE_ID_TYPES = ["FAYDA_FAN", "FARMER_ID"];
 
-// New request at the Exchange: the partner picks one of its use cases (one
-// policy per use case in Partner Management). The purpose and the data per
-// registry are the use case's (shown read-only); the Consent Manager checks the
-// grant again and takes them from the Composite.
-export default function UseCaseRequestForm() {
+// Every scope of a template, by registry (required + optional).
+function allScopes(t: ConsentTemplate): Record<string, string[]> {
+  return Object.fromEntries(t.grants.map((g) => [g.data_controller, [...g.data_scopes]]));
+}
+
+// New request at the Exchange: the partner picks one of the consent templates
+// offered to it. The purpose and the required data per registry are the
+// template's (shown read-only); optional data is ticked unless the subject
+// declines it. The Consent Manager checks the template again and applies its
+// limits.
+export default function TemplateRequestForm() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [params] = useSearchParams();
   const access = useAccess();
   const settings = useRequestSettings();
 
-  const useCases = useMemo(
-    () => (access.data?.use_cases ?? []).filter((u) => u.available),
+  const templates = useMemo(
+    () => (access.data?.templates ?? []).filter((t) => t.available !== false),
     [access.data]
   );
-  const [ref, setRef] = useState(params.get("use_case") ?? "");
-  const useCase = useCases.find((u) => u.use_case === ref);
+  const [code, setCode] = useState(params.get("template") ?? "");
+  const template = templates.find((t) => t.code === code);
+  // The scopes chosen per registry: all of the template's, until the subject
+  // declines optional ones.
+  const [chosen, setChosen] = useState<Record<string, string[]>>({});
+  useEffect(() => {
+    setChosen(template ? allScopes(template) : {});
+  }, [template]);
+  const toggle = (controller: string, scope: string) => {
+    const now = chosen[controller] ?? [];
+    setChosen({
+      ...chosen,
+      [controller]: now.includes(scope) ? now.filter((s) => s !== scope) : [...now, scope],
+    });
+  };
 
   const [idType, setIdType] = useState("FAYDA_FAN");
   const [idValue, setIdValue] = useState("");
@@ -37,34 +56,33 @@ export default function UseCaseRequestForm() {
   const [validUntil, setValidUntil] = useState("");
   const [touched, setTouched] = useState(false);
 
-  // One granted use case: choose it.
+  // One template offered: choose it.
   useEffect(() => {
-    if (!ref && useCases.length === 1) setRef(useCases[0].use_case);
-  }, [ref, useCases]);
+    if (!code && templates.length === 1) setCode(templates[0].code);
+  }, [code, templates]);
 
-  // ID types: those the use case's policy accepts, else those the use case
-  // takes, else the Master Data list (labels from it in every case).
+  // ID types: those the template accepts, else the Master Data list (labels
+  // from it in every case).
   const mdsIdTypes = settings.data?.subject_id_types ?? null;
   const idTypeLabels = useMemo(() => codeLabels(mdsIdTypes), [mdsIdTypes]);
   const idTypeOptions = useMemo(() => {
-    const allowed = useCase?.allowed_subject_id_types ?? [];
-    const takes = useCase?.subject_id_types ?? [];
+    const allowed = template?.allowed_subject_id_types ?? [];
     const mds = mdsIdTypes?.values.map((v) => v.code) ?? [];
-    return [...new Set(allowed.length ? allowed : takes.length ? takes : mds.length ? mds : BASE_ID_TYPES)];
-  }, [useCase, mdsIdTypes]);
+    return [...new Set(allowed.length ? allowed : mds.length ? mds : BASE_ID_TYPES)];
+  }, [template, mdsIdTypes]);
 
   useEffect(() => {
-    const allowed = useCase?.allowed_subject_id_types ?? [];
+    const allowed = template?.allowed_subject_id_types ?? [];
     if (allowed.length && !allowed.includes(idType)) setIdType(allowed[0]);
-  }, [useCase, idType]);
+  }, [template, idType]);
 
   const problems: string[] = [];
-  if (!useCase) problems.push("Choose a use case.");
+  if (!template) problems.push("Choose a consent template.");
   if (!idValue.trim()) problems.push("Enter the subject's ID.");
   for (const t of requiredIds) if (!(extraIds[t] ?? "").trim()) problems.push(`Enter the subject's ${t}.`);
-  const allowedTypes = useCase?.allowed_subject_id_types ?? [];
+  const allowedTypes = template?.allowed_subject_id_types ?? [];
   if (allowedTypes.length && !allowedTypes.includes(idType))
-    problems.push(`Subject ID type ${idType} is not accepted for this use case.`);
+    problems.push(`Subject ID type ${idType} is not accepted for this consent template.`);
   if (mdsIdTypes && !mdsIdTypes.values.some((v) => v.code === idType))
     problems.push(`Subject ID type ${idType} is not in Master Data list ${mdsIdTypes.list_code}.`);
   if (validFrom && validUntil && validUntil < validFrom)
@@ -76,7 +94,11 @@ export default function UseCaseRequestForm() {
       const body: ConsentRequestCreate = {
         subject_id: { type: idType, value: idValue.trim() },
         subject_identifiers: requiredIds.map((t) => ({ type: t, value: (extraIds[t] ?? "").trim() })),
-        use_case: ref,
+        template: code,
+        // Registries left with no scope (only optional ones, all declined) are dropped.
+        grants: Object.entries(chosen)
+          .filter(([, scopes]) => scopes.length > 0)
+          .map(([data_controller, data_scopes]) => ({ data_controller, data_scopes })),
       };
       if (validFrom || validUntil) {
         body.validity = {};
@@ -97,7 +119,7 @@ export default function UseCaseRequestForm() {
     if (problems.length === 0) create.mutate();
   };
 
-  const unknownRef = !!ref && !!access.data && !useCase;
+  const unknownCode = !!code && !!access.data && !template;
 
   return (
     <div>
@@ -108,49 +130,49 @@ export default function UseCaseRequestForm() {
         </Link>
       </div>
       <p className="muted page-intro">
-        Raise a request while the subject is with you, for one of the use cases your organisation is
-        granted: the subject consents to share the data that use case needs, for its purpose. Next,
+        Raise a request while the subject is with you, from one of the consent templates offered to
+        your organisation: the subject consents to share the data it names, for its purpose. Next,
         upload the consent form the subject signed and submit the request for verification.
       </p>
 
-      {access.isLoading && <div className="loading">Loading your use cases…</div>}
-      {access.error && <ErrorNotice error={access.error} what="your use cases" />}
-      {access.data && useCases.length === 0 && (
+      {access.isLoading && <div className="loading">Loading your consent templates…</div>}
+      {access.error && <ErrorNotice error={access.error} what="your consent templates" />}
+      {access.data && templates.length === 0 && (
         <div className="card">
-          Your organisation is granted no use case that can be asked for now, so it cannot request
-          consent yet. See “Use cases”.
+          No consent template can be used by your organisation now, so it cannot request consent
+          yet. See “Consent templates”.
         </div>
       )}
 
-      {access.data && useCases.length > 0 && (
+      {access.data && templates.length > 0 && (
         <form onSubmit={onSubmit}>
           <div className="card">
-            <h3 className="card-title">Use case</h3>
+            <h3 className="card-title">Consent template</h3>
             <div className="grid-2">
               <div className="field">
-                <label htmlFor="use-case">Use case</label>
-                <select id="use-case" value={useCase ? ref : ""} onChange={(e) => setRef(e.target.value)}>
+                <label htmlFor="template">Consent template</label>
+                <select id="template" value={template ? code : ""} onChange={(e) => setCode(e.target.value)}>
                   <option value="">Choose…</option>
-                  {useCases.map((u) => (
-                    <option key={u.use_case} value={u.use_case}>
-                      {u.title ? `${u.title} (${u.use_case})` : u.use_case}
+                  {templates.map((t) => (
+                    <option key={t.code} value={t.code}>
+                      {t.title ? `${t.title} (${t.code})` : t.code}
                     </option>
                   ))}
                 </select>
-                {unknownRef && (
+                {unknownCode && (
                   <div className="hint">
-                    <code className="mono">{ref}</code> is not granted to your organisation.
+                    <code className="mono">{code}</code> is not offered to your organisation.
                   </div>
                 )}
               </div>
             </div>
-            {useCase && (
+            {template && (
               <>
-                {useCase.description && <p style={{ marginTop: 0 }}>{useCase.description}</p>}
-                <UseCaseFacts u={useCase} />
+                {template.description && <p style={{ marginTop: 0 }}>{template.description}</p>}
+                <TemplateFacts t={template} chosen={chosen} onToggle={toggle} />
                 <div className="hint">
-                  The consent covers this purpose and data (required, and optional data when the
-                  subject agrees) and nothing else.
+                  The consent covers this purpose and data (required, and the optional data ticked:
+                  untick what the subject does not agree to share) and nothing else.
                 </div>
               </>
             )}
@@ -212,7 +234,7 @@ export default function UseCaseRequestForm() {
                 />
                 <div className="hint">
                   Empty: the default validity
-                  {useCase?.max_validity_duration ? ` (at most ${useCase.max_validity_duration})` : ""}.
+                  {template?.max_validity_duration ? ` (at most ${template.max_validity_duration})` : ""}.
                 </div>
               </div>
             </div>

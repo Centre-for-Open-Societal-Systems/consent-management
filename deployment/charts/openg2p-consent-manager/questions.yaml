@@ -232,11 +232,11 @@ questions:
   label: Expose Token Status Endpoint
   group: Exchange
   show_if: global.agriStackExchange.role=exchange
-- variable: global.agriStackExchange.compositeApiUrl
-  description: "The Composite's API URL (in-cluster). Partner-portal and lifecycle consents here are made for a use case granted to the partner in Partner Management; the use case's purpose and scopes per registry are read from it. Empty = http://agri-composite-api (the Composite in this namespace)."
+- variable: global.agriStackExchange.consentTemplateSourceUrl
+  description: "Where this CM reads the consent templates offered to each partner (in-cluster URL of the template collection; GET <url>?partner=<id>). Partner-portal and lifecycle consents here are made from one: its purpose, scopes per registry and limits. Empty = http://agri-composite-api/composite/v1/internal/consent-templates (the Composite in this namespace)."
   type: string
   default: ""
-  label: Composite API URL
+  label: Consent Template Source URL
   group: Exchange
   show_if: global.agriStackExchange.role=exchange
 - variable: global.agriStackExchange.exchangeDomain
@@ -290,13 +290,6 @@ questions:
   description: Hostname of the partner portal (also its Keycloak client's redirect URI)
   type: string
   label: Partner Portal Hostname
-  group: Partner portal
-  show_if: partnerPortal.enabled=true
-- variable: partnerPortal.compositeUrl
-  description: "Optional Composite base URL (e.g. the Exchange's use-case service). When set, the portal lists the Composite's use cases and can prefill a request from one. Empty = none; for the exchange role, https://agri-composite.<this domain>."
-  type: string
-  default: ""
-  label: Composite URL
   group: Partner portal
   show_if: partnerPortal.enabled=true
 - variable: partnerPortal.subjectAuth.enabled

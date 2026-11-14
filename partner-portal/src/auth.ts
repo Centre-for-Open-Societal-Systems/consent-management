@@ -8,9 +8,6 @@ import Keycloak from "keycloak-js";
 
 export interface AppConfig {
   apiBaseUrl: string;
-  // Optional: the use-case composite's base URL (e.g. https://composite.example.org).
-  // Empty → the "Use cases" page is hidden.
-  compositeUrl?: string;
   keycloak: { url: string; realm: string; clientId: string };
 }
 

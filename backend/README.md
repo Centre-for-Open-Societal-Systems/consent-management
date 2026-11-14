@@ -24,7 +24,7 @@ key. Its claims carry `jti`, `aud`, `subject_id`, `purpose`, `fetch_type`,
 
 `POST /consent/v1/validate` takes `consent_jws`, an optional `data_controller`
 (the calling registry) and an optional `request_context {requested_scopes,
-subject_id, use_case, purpose}`:
+subject_id, purpose, limits, template}`:
 
 - With `grants`, `data_controller` is required and selects the grant; a
   controller without a grant is denied `controller_not_granted`. With the
@@ -34,12 +34,18 @@ subject_id, use_case, purpose}`:
   and cached. Effective scopes = grant ∩ that policy (∩ `requested_scopes`).
   No policy: `unknown_partner`; PM unreachable and nothing cached:
   `policy_unavailable`.
-- Use-case mode (a configured receipt presenter sending
-  `request_context.use_case`): the partner's policy for that use case in PM
-  (`?use_case=name@major`; one policy per use case) applies instead; none:
-  `use_case_not_granted`.
+- Caller-terms mode (a configured receipt presenter, e.g. the Composite,
+  sending `request_context.purpose`): the terms it sends apply instead of the
+  partner's scope policies, and no partner policy is read. The consent's
+  purpose must be `purpose` (`purpose_not_allowed`); `requested_scopes` is
+  required and is the ceiling (grant ∩ `requested_scopes`); `limits`
+  (`allowed_subject_id_types`, `max_validity_duration`, `allowed_signing_algs`,
+  `allow_partner_consents` — absent = false) apply; `template` is a label,
+  recorded as `policy_ref: template:<code>`. `limits` or `template` from any
+  other caller: `caller_terms_not_allowed`.
 - A partner-signed `consent_jws` is accepted only when the applicable policy
-  sets `allow_partner_consents` (else `partner_consent_not_accepted`).
+  (or, in caller-terms mode, `limits`) sets `allow_partner_consents` (else
+  `partner_consent_not_accepted`).
 - Consent by lookup at a registry: neither `consent_jws` nor `consent_id`, with
   `partner_id`, `data_controller` and `request_context.subject_id` — the CM
   picks the partner's active consent for that subject (its subject or one of its
@@ -58,15 +64,18 @@ the Consent Manager keeps none.
 Originated consents (`/consent-requests`) may carry `grants` too, and the
 subject approves each controller's scopes. In the exchange role
 (`receipt_issuer` and `receipt_presenters` set), a consent request (lifecycle
-or partner portal) must name a `use_case` (`name@major`) for which the
-partner has a policy in PM (else `422 use_case_not_granted`; explicit grants are
-refused, `400`): its grants and purpose are the use case's,
-read from the Composite (`CONSENT_MANAGER_COMPOSITE_API_URL`, `GET
-/composite/v1/use-cases/{ref}`; unreachable → 503), and the consent is
-presentable in use-case mode only for that use case: by `consent_id`, or by
-lookup — a presenter sends neither `consent_jws` nor `consent_id`, and the CM
-picks the partner's active consent for the subject and use case (latest
-`valid_until`, then newest; none: `consent_not_found`).
+or partner portal) must name a consent `template` offered to the partner by the
+template source (`CONSENT_MANAGER_CONSENT_TEMPLATE_SOURCE_URL`, the URL of its
+template collection: `GET <url>?partner=<audience>`, `GET
+<url>/<code>?partner=<audience>`; not offered → `422 template_not_offered`;
+unreachable → 503; a request without a template → `400`). The consent takes
+the template's purpose and its scopes per registry (optional `grants` choose
+within them, required scopes included), its limits apply (subject ID types,
+longest validity, also the default validity), and the template's code is kept
+as a label (`template`). It is presented in caller-terms mode: by
+`consent_id`, or by lookup — a presenter sends neither `consent_jws` nor
+`consent_id`, and the CM picks the partner's active consent for the subject
+and purpose (latest `valid_until`, then newest; none: `consent_not_found`).
 
 ## Tests
 

@@ -5,20 +5,22 @@ export function pmPartnerId(audience: string): string {
   return "PARTNER_" + audience.trim().toUpperCase().replace(/-/g, "_");
 }
 
-// "use_case:loan-profile@1" → "Use case loan-profile@1";
-// "data_controller:farmer-registry" → "Registry farmer-registry".
+// "data_controller:farmer-registry" → "Registry farmer-registry";
+// "template:loan-profile@1" → "Consent template loan-profile@1" (terms of a
+// consent template, sent by a token presenter: no Partner Management policy).
 export function policyLabel(ref?: string | null): string | null {
   if (!ref) return null;
   const i = ref.indexOf(":");
   const kind = i < 0 ? "" : ref.slice(0, i);
   const key = i < 0 ? ref : ref.slice(i + 1);
-  if (kind === "use_case") return `Use case ${key}`;
+  if (kind === "template") return `Consent template ${key}`;
   if (kind === "data_controller") return `Registry ${key}`;
   return key;
 }
 
-// The PM policy a decision or consent used: "Use case loan-profile@1 · v1",
-// linking to the partner's page in Partner Management when its URL is set.
+// The PM policy a decision or consent used: "Registry farmer-registry · v1",
+// linking to the partner's page in Partner Management when its URL is set (not
+// for a consent template, which is not a PM policy).
 export function PolicyRef({
   partnerId,
   policyRef,
@@ -36,7 +38,7 @@ export function PolicyRef({
   if (!text) return <>—</>;
   const pmUrl = getConfig().partnerManagementUiUrl?.trim().replace(/\/+$/, "");
   const title = policyId ? `Partner Management policy ${policyId}` : undefined;
-  if (pmUrl && partnerId) {
+  if (pmUrl && partnerId && !policyRef?.startsWith("template:")) {
     return (
       <a
         href={`${pmUrl}/partners/${encodeURIComponent(pmPartnerId(partnerId))}`}

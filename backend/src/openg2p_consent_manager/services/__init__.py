@@ -1,5 +1,4 @@
 from .assisted_service import AssistedConsentService, artefact_status
-from .composite_client import CompositeClient, CompositeUnavailable, UseCase
 from .consent_record_service import ConsentRecordService
 from .consent_service import ConsentService
 from .crypto_service import CryptoService
@@ -12,12 +11,19 @@ from .pm_policy_client import PmPolicy, PmPolicyClient, PolicyUnavailable, pm_pa
 from .policy_service import PolicyResult, PolicyService
 from .receipt_service import ReceiptService
 from .subject_auth_service import SubjectAuthService
+from .template_client import (
+    ConsentTemplate,
+    ConsentTemplateClient,
+    TemplateLimits,
+    TemplateSourceUnavailable,
+)
 from .verification_service import VerificationService
 
 __all__ = [
-    "CompositeClient",
-    "CompositeUnavailable",
-    "UseCase",
+    "ConsentTemplate",
+    "ConsentTemplateClient",
+    "TemplateLimits",
+    "TemplateSourceUnavailable",
     "CryptoService",
     "ExchangeService",
     "PartnerService",

@@ -63,11 +63,11 @@ trial.openg2p.org. Root context.
 - name: CONSENT_MANAGER_RECEIPT_TTL_SECONDS
   value: {{ $x.receiptTtlSeconds | default 300 | quote }}
 {{- end }}
-{{- $composite := tpl ($x.compositeApiUrl | default "") . -}}
-{{- if and (not $composite) (eq $role "exchange") }}{{ $composite = $x.defaultCompositeApiUrl }}{{ end -}}
-{{- if $composite }}
-- name: CONSENT_MANAGER_COMPOSITE_API_URL
-  value: {{ $composite | quote }}
+{{- $templates := tpl ($x.consentTemplateSourceUrl | default "") . -}}
+{{- if and (not $templates) (eq $role "exchange") }}{{ $templates = $x.defaultConsentTemplateSourceUrl }}{{ end -}}
+{{- if $templates }}
+- name: CONSENT_MANAGER_CONSENT_TEMPLATE_SOURCE_URL
+  value: {{ $templates | quote }}
 {{- end }}
 {{- if $issuers }}
 - name: CONSENT_MANAGER_TRUSTED_RECEIPT_ISSUERS

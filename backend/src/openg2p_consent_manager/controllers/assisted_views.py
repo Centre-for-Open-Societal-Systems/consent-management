@@ -31,7 +31,7 @@ def request_fields(req, consent_id: Optional[str] = None, subject_auth: Optional
         "id": req.id,
         "status": req.status,
         "method": req.method,
-        "use_case": req.use_case,
+        "template": req.template,
         "subject_id": SubjectId(type=req.subject_id_type, value=req.subject_id_value),
         "subject_identifiers": [SubjectId(**i) for i in (req.subject_identifiers or [])],
         "purpose": req.purpose or {},
@@ -56,7 +56,7 @@ def evidence_list(rows) -> list:
     return [EvidenceResponse.model_validate(e) for e in rows]
 
 
-def consent_view(artefact, use_cases: dict) -> PartnerConsentResponse:
+def consent_view(artefact, templates: dict) -> PartnerConsentResponse:
     if artefact.grants:
         grants = [
             ConsentGrantView(
@@ -90,7 +90,7 @@ def consent_view(artefact, use_cases: dict) -> PartnerConsentResponse:
         valid_from=artefact.valid_from,
         valid_until=artefact.valid_until,
         assurance=artefact.assurance,
-        use_case=artefact.use_case or use_cases.get(artefact.consent_request_id),
+        template=artefact.template or templates.get(artefact.consent_request_id),
         consent_request_id=artefact.consent_request_id,
         created_at=artefact.created_at,
         revoked_at=artefact.revoked_at,

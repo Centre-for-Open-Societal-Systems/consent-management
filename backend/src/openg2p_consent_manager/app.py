@@ -32,9 +32,9 @@ from .models import (
 )
 from .services import (
     AssistedConsentService,
-    CompositeClient,
     ConsentRecordService,
     ConsentService,
+    ConsentTemplateClient,
     CryptoService,
     EvidenceService,
     ExchangeService,
@@ -62,12 +62,12 @@ class Initializer(BaseInitializer):
         PartnerService()  # depends on PmPolicyClient
         PolicyService()
         ReceiptService()
-        CompositeClient()
+        ConsentTemplateClient()
         MasterDataClient()
         ExchangeService()  # depends on CryptoService
         VerificationService()
         ConsentService()
-        LifecycleService()  # depends on PartnerService, CompositeClient
+        LifecycleService()  # depends on PartnerService, ConsentTemplateClient
         EvidenceService()
         SubjectAuthService()
         AssistedConsentService()
@@ -155,6 +155,62 @@ class Initializer(BaseInitializer):
                     await conn.execute(
                         text(f"ALTER TABLE {table} ALTER COLUMN controller_id DROP NOT NULL")
                     )
+                # G2P-5719 "use_case → template": a consent (and its request)
+                # keeps the consent template it was made from as a label. Rename
+                # the column, keeping its data (and, for a request made from a
+                # template, the marker on its grants). Idempotent.
+                await conn.execute(
+                    text(
+                        """
+                        DO $$
+                        DECLARE t text;
+                        BEGIN
+                          FOREACH t IN ARRAY ARRAY['consent_artefacts', 'consent_requests'] LOOP
+                            IF EXISTS (
+                              SELECT 1 FROM information_schema.columns
+                              WHERE table_schema = current_schema() AND table_name = t
+                                AND column_name = 'use_case'
+                            ) THEN
+                              IF EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_schema = current_schema() AND table_name = t
+                                  AND column_name = 'template'
+                              ) THEN
+                                EXECUTE format(
+                                  'UPDATE %I SET template = use_case '
+                                  'WHERE template IS NULL AND use_case IS NOT NULL', t);
+                                EXECUTE format('ALTER TABLE %I DROP COLUMN use_case', t);
+                              ELSE
+                                EXECUTE format(
+                                  'ALTER TABLE %I RENAME COLUMN use_case TO template', t);
+                              END IF;
+                            END IF;
+                          END LOOP;
+                        END $$;
+                        """
+                    )
+                )
+                await conn.execute(
+                    text(
+                        """
+                        UPDATE consent_requests r SET grants = (
+                          SELECT jsonb_agg(
+                            CASE WHEN g ? 'use_case'
+                              THEN (g - 'use_case') || jsonb_build_object('template', g -> 'use_case')
+                              ELSE g END
+                            ORDER BY i)
+                          FROM jsonb_array_elements(r.grants) WITH ORDINALITY AS e(g, i))
+                        WHERE jsonb_typeof(r.grants) = 'array'
+                          AND EXISTS (
+                            SELECT 1 FROM jsonb_array_elements(r.grants) g
+                            WHERE g ? 'use_case')
+                        """
+                    )
+                )
+                for table in ("consent_artefacts", "consent_requests"):
+                    await conn.execute(
+                        text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS template VARCHAR(255)")
+                    )
                 await conn.execute(
                     text(
                         "ALTER TABLE decision_logs ADD COLUMN IF NOT EXISTS "
@@ -183,7 +239,6 @@ class Initializer(BaseInitializer):
                 # ── Consent scenario 1: assisted requests + staff verification ──
                 for column, ddl in (
                     ("method", "VARCHAR(20)"),
-                    ("use_case", "VARCHAR(255)"),
                     ("created_by", "VARCHAR(255)"),
                     ("partner_audience", "VARCHAR(255)"),
                     ("submitted_at", "TIMESTAMPTZ"),
@@ -228,26 +283,21 @@ class Initializer(BaseInitializer):
                         "revoked_by VARCHAR(255)"
                     )
                 )
-                # Exchange role: the use case a consent was made for.
-                await conn.execute(
-                    text(
-                        "ALTER TABLE consent_artefacts ADD COLUMN IF NOT EXISTS "
-                        "use_case VARCHAR(255)"
-                    )
-                )
                 await conn.execute(
                     text(
                         "CREATE INDEX IF NOT EXISTS ix_consent_artefacts_consent_request_id "
                         "ON consent_artefacts (consent_request_id)"
                     )
                 )
-                # Consent by lookup (/validate, use-case mode): active consents
-                # by (partner, subject, use case), latest valid_until first.
+                # Consent by lookup (/validate, caller-terms mode): active
+                # consents by (partner, subject, purpose), latest valid_until
+                # first. Replaces ix_consent_artefacts_lookup (by template).
+                await conn.execute(text("DROP INDEX IF EXISTS ix_consent_artefacts_lookup"))
                 await conn.execute(
                     text(
-                        "CREATE INDEX IF NOT EXISTS ix_consent_artefacts_lookup "
+                        "CREATE INDEX IF NOT EXISTS ix_consent_artefacts_purpose_lookup "
                         "ON consent_artefacts (partner_id, subject_id_type, "
-                        "subject_id_value, use_case, valid_until DESC) "
+                        "subject_id_value, (purpose ->> 'code'), valid_until DESC) "
                         "WHERE status = 'active'"
                     )
                 )
@@ -259,7 +309,7 @@ class Initializer(BaseInitializer):
                         "ON consent_artefacts USING gin (subject_identifiers jsonb_path_ops)"
                     )
                 )
-                # Consent by lookup at a registry (no use case): by (partner,
+                # Consent by lookup at a registry: by (partner,
                 # subject, data controller).
                 await conn.execute(
                     text(

@@ -47,7 +47,7 @@ class StaffConsentController(BaseController):
         artefact = await self.consents.get_artefact(consent_id)
         if artefact is None:
             return not_found()
-        use_cases = await self.assisted.use_cases([artefact.consent_request_id])
+        templates = await self.assisted.templates([artefact.consent_request_id])
         receipt = await self.consents.get_receipt_by_consent(consent_id)
         evidence = (
             await self.assisted.list_evidence(artefact.consent_request_id)
@@ -55,7 +55,7 @@ class StaffConsentController(BaseController):
         )
         revocations = await self.consents.list_revocations(consent_id)
         return StaffConsentResponse(
-            **consent_view(artefact, use_cases).model_dump(),
+            **consent_view(artefact, templates).model_dump(),
             partner_id=artefact.partner_id,
             source=artefact.source,
             receipt_id=receipt.id if receipt else None,

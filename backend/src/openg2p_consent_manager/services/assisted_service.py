@@ -25,14 +25,19 @@ from ..models import (
     RequestStatus,
 )
 from ..utils.canonical import iso_duration_to_timedelta
-from .composite_client import EXCHANGE_NEEDS_USE_CASE, consent_by_use_case
 from .evidence_service import EvidenceError, EvidenceService
 from .lifecycle_service import LifecycleError, LifecycleService
 from .master_data_client import MasterDataClient
 from .partner_service import PartnerService
 from .pm_policy_client import PolicyUnavailable, common_policy_fields, policy_fields
+from .policy_service import template_fields
 from .receipt_service import ReceiptService
 from .subject_auth_service import SubjectAuthService
+from .template_client import (
+    EXCHANGE_NEEDS_TEMPLATE,
+    TemplateSourceUnavailable,
+    consent_by_template,
+)
 
 _config = Settings.get_config()
 _logger = logging.getLogger(_config.logging_default_logger_name)
@@ -65,13 +70,13 @@ class AssistedConsentService(BaseService):
     # ── Partner: what it may ask for ─────────────────────────────────────────
 
     async def access(self, audience: str) -> dict:
-        """What the partner may ask for. Exchange role: one entry per use-case
-        policy of the partner in Partner Management (one per use case), each
-        with the use case's purpose and per-registry scopes from the Composite. Otherwise: its active scope
-        policies, one per data controller. Raises LifecycleError(503) when PM
-        or (exchange role) the Composite cannot be reached."""
-        if consent_by_use_case():
-            return {"consent_by": "use_case", "use_cases": await self._use_case_access(audience)}
+        """What the partner may ask for. Exchange role: the consent templates
+        the template source offers the partner (purpose, per-registry scopes
+        and limits). Otherwise: its active scope policies, one per data
+        controller. Raises LifecycleError(503) when PM or (exchange role) the
+        template source cannot be reached."""
+        if consent_by_template():
+            return {"consent_by": "template", "templates": await self._template_access(audience)}
         try:
             policies = await self.partners.scope_policies(audience)
         except PolicyUnavailable as exc:
@@ -93,43 +98,31 @@ class AssistedConsentService(BaseService):
             ],
         }
 
-    async def _use_case_access(self, audience: str) -> list:
-        """One entry per use-case policy of the partner in Partner Management:
-        the use case (Composite) with that policy's limits."""
+    async def _template_access(self, audience: str) -> list:
+        """One entry per consent template offered to the partner."""
         try:
-            policies = await self.partners.use_case_policies(audience)
-        except PolicyUnavailable as exc:
+            templates = await self.lifecycle.templates.list_templates(audience)
+        except TemplateSourceUnavailable as exc:
             raise LifecycleError(
-                503, "the partner's policies could not be read from Partner Management"
+                503, "the consent template source could not be reached"
             ) from exc
         out = []
-        for policy in policies:
-            ref = policy.use_case
-            limits = {
-                "allowed_purposes": list(policy.allowed_purposes or []),
-                "allowed_subject_id_types": list(policy.allowed_subject_id_types or []),
-                "max_validity_duration": policy.max_validity_duration,
-                "policy_version": policy.version,
+        for template in sorted(templates, key=lambda t: t.code):
+            entry = {
+                "code": template.code,
+                "title": template.title,
+                "description": template.description,
+                "purpose": template.purpose,
+                "grants": template.grants,
+                "allowed_subject_id_types": list(template.limits.allowed_subject_id_types),
+                "max_validity_duration": template.limits.max_validity_duration,
+                "allow_partner_consents": template.limits.allow_partner_consents,
             }
             try:
-                use_case = await self.lifecycle.read_use_case(ref)
+                self.lifecycle.check_usable(template)
             except LifecycleError as exc:
-                if exc.status_code == 503:
-                    raise
-                out.append({"use_case": ref, **limits, "available": False,
-                            "detail": exc.detail})
-                continue
-            out.append(
-                {
-                    "use_case": use_case.ref,
-                    "title": use_case.title,
-                    "description": use_case.description,
-                    "purpose": use_case.purpose,
-                    "grants": use_case.grants,
-                    "subject_id_types": use_case.subject_id_types,
-                    **limits,
-                }
-            )
+                entry.update(available=False, detail=exc.detail)
+            out.append(entry)
         return out
 
     # ── Partner: requests ────────────────────────────────────────────────────
@@ -139,20 +132,21 @@ class AssistedConsentService(BaseService):
         policy for that controller (scopes, and its purpose, subject id type
         and maximum validity — an empty allowed list means any).
 
-        Exchange role: always made for ``use_case`` (``grants`` refused)
-        (the partner's policy for that use case in Partner Management must
-        exist); the grants and purpose are the Composite's use case, and that
-        policy's purposes, subject id types and maximum validity apply."""
-        # Exchange role: always by use case, never with explicit grants.
-        # Elsewhere: grants checked against scope policies; use_case a label.
-        by_use_case = consent_by_use_case()
-        if by_use_case and (data.grants is not None or not data.use_case):
-            raise LifecycleError(400, EXCHANGE_NEEDS_USE_CASE)
-        if not by_use_case and data.grants is None:
+        Exchange role: always made from a consent ``template`` offered to the
+        partner; its purpose, scopes (``grants``, if given, chosen within them)
+        and limits (subject id types, maximum validity) apply."""
+        # Exchange role: always from a template. Elsewhere: grants checked
+        # against scope policies; template a label.
+        by_template = consent_by_template()
+        if by_template and not data.template:
+            raise LifecycleError(400, EXCHANGE_NEEDS_TEMPLATE)
+        if not by_template and data.grants is None:
             raise LifecycleError(422, "'grants' is required")
-        await self._check_code_lists(data, by_use_case)
+        if not by_template and data.purpose is None:
+            raise LifecycleError(422, "'purpose' is required with 'grants'")
+        await self._check_code_lists(data, by_template)
         resolved = (
-            None if by_use_case else await self.lifecycle.resolve_grants(audience, data.grants)
+            None if by_template else await self.lifecycle.resolve_grants(audience, data.grants)
         )
 
         given = {i.type.strip(): i.value.strip() for i in data.subject_identifiers}
@@ -167,18 +161,19 @@ class AssistedConsentService(BaseService):
         if valid_until is not None and valid_until <= now:
             raise LifecycleError(422, "validity.valid_until is in the past")
 
-        if by_use_case:
-            use_case, _, grants = await self.lifecycle.resolve_use_case(
-                audience, data.use_case, data.subject_id.type,
+        if by_template:
+            template, grants = await self.lifecycle.resolve_template(
+                audience, data.template, data.subject_id.type,
                 data.purpose.code if data.purpose else None, valid_from, valid_until,
+                chosen=data.grants,
             )
-            purpose = {"code": use_case.purpose}
-            use_case_ref = use_case.ref
+            purpose = {"code": template.purpose}
+            template_code = template.code
         else:
             self._check_scope_policies(resolved, data, valid_from, valid_until, now)
             grants = [g for g, _ in resolved]
             purpose = data.purpose.model_dump()
-            use_case_ref = data.use_case
+            template_code = data.template
 
         async with async_session()() as session:
             req = ConsentRequest(
@@ -194,7 +189,7 @@ class AssistedConsentService(BaseService):
                 valid_until=valid_until,
                 status=RequestStatus.pending.value,
                 method=RequestMethod.assisted.value,
-                use_case=use_case_ref,
+                template=template_code,
                 created_by=username,
                 partner_audience=audience,
             )
@@ -203,12 +198,12 @@ class AssistedConsentService(BaseService):
             await session.refresh(req)
             return req
 
-    async def _check_code_lists(self, data, by_use_case: bool) -> None:
-        """The subject ID type and (not by use case: the use case's purpose is
-        the Composite's) the purpose must be in their Master Data lists when
-        those are loaded; otherwise anything is accepted."""
+    async def _check_code_lists(self, data, by_template: bool) -> None:
+        """The subject ID type and (not from a template: the template's purpose
+        is the template source's) the purpose must be in their Master Data
+        lists when those are loaded; otherwise anything is accepted."""
         checks = [("subject_id_types", "subject ID type", data.subject_id.type)]
-        if not by_use_case and data.purpose is not None:
+        if not by_template and data.purpose is not None:
             checks.append(("purposes", "purpose", data.purpose.code))
         for kind, what, value in checks:
             codes = await self.master_data.code_list(kind)
@@ -443,13 +438,15 @@ class AssistedConsentService(BaseService):
                 raise LifecycleError(409, f"request is '{req.status}'")
 
             grants, fetch_type, max_validity = [], None, None
-            # A request made for a use case (exchange role) is narrowed to the
-            # use case's scopes as they are now (and needs the use case still
-            # granted), not to scope policies.
-            ceiling = await self.lifecycle.use_case_ceiling(req)
+            # A request made from a consent template (exchange role) is
+            # narrowed to the template's scopes as they are now (and needs the
+            # template still offered to the partner), not to scope policies.
+            ceiling = await self.lifecycle.template_ceiling(req)
+            if ceiling is not None:
+                max_validity = self.lifecycle.max_validity(ceiling[0])
             for rg in req.grants or []:
                 if ceiling is not None:
-                    policy = ceiling[0]
+                    policy = None
                     allowed = ceiling[1].get(rg["data_controller"], set())
                 else:
                     policy = await self.lifecycle.current_policy(
@@ -461,23 +458,27 @@ class AssistedConsentService(BaseService):
                 effective = sorted(set(rg["data_scopes"]) & allowed)
                 if not effective:
                     continue
-                fetch_type = fetch_type or policy.fetch_type
-                limit = self._max_validity(policy)
-                if limit is not None:
-                    max_validity = limit if max_validity is None else min(max_validity, limit)
+                if policy is not None:
+                    fetch_type = fetch_type or policy.fetch_type
+                    limit = self._max_validity(policy)
+                    if limit is not None:
+                        max_validity = limit if max_validity is None else min(max_validity, limit)
                 grants.append(
                     {
                         "data_controller": rg["data_controller"],
                         "data_scopes": rg["data_scopes"],
                         "granted_scopes": sorted(rg["data_scopes"]),
                         "effective_data_scopes": effective,
-                        **policy_fields(policy),
+                        **(
+                            template_fields(ceiling[0].code) if ceiling is not None
+                            else policy_fields(policy)
+                        ),
                     }
                 )
             if not grants:
                 raise LifecycleError(
                     422,
-                    f"no requested scope is in use case '{req.use_case}' now"
+                    f"no requested scope is in consent template '{req.template}' now"
                     if ceiling is not None else
                     "no requested scope is permitted by the partner's current policy",
                 )
@@ -535,7 +536,7 @@ class AssistedConsentService(BaseService):
                 **common_policy_fields(grants),
                 assurance=assurance,
                 consent_request_id=req.id,
-                use_case=req.use_case if ceiling is not None else None,
+                template=req.template if ceiling is not None else None,
                 status=ArtefactStatus.active.value,
                 created_at=now,
             )
@@ -579,7 +580,7 @@ class AssistedConsentService(BaseService):
         self, audience: str, status: Optional[str], limit: int, offset: int
     ) -> tuple[int, list, dict]:
         """The partner's originated consents, newest first, with
-        {request id: use_case} for those made from a request."""
+        {request id: template} for those made from a request."""
         now = datetime.now(timezone.utc)
         base = self._partner_consents(audience)
         if status == ArtefactStatus.active.value:
@@ -609,7 +610,7 @@ class AssistedConsentService(BaseService):
                     )
                 ).scalars().all()
             )
-        return total, rows, await self.use_cases([a.consent_request_id for a in rows])
+        return total, rows, await self.templates([a.consent_request_id for a in rows])
 
     async def get_consent(self, audience: str, consent_id: str):
         async with async_session()() as session:
@@ -620,19 +621,20 @@ class AssistedConsentService(BaseService):
             ).scalars().first()
         if artefact is None:
             return None, {}
-        return artefact, await self.use_cases([artefact.consent_request_id])
+        return artefact, await self.templates([artefact.consent_request_id])
 
-    async def use_cases(self, request_ids: list) -> dict:
+    async def templates(self, request_ids: list) -> dict:
+        """{request id: the consent template it names (a label)}."""
         ids = [r for r in request_ids if r]
         if not ids:
             return {}
         async with async_session()() as session:
             rows = await session.execute(
-                select(ConsentRequest.id, ConsentRequest.use_case).where(
+                select(ConsentRequest.id, ConsentRequest.template).where(
                     ConsentRequest.id.in_(ids)
                 )
             )
-            return {rid: use_case for rid, use_case in rows.all()}
+            return {rid: template for rid, template in rows.all()}
 
     # ── helpers ──────────────────────────────────────────────────────────────
 

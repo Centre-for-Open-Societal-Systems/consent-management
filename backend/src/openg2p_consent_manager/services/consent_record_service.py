@@ -68,7 +68,7 @@ class ConsentRecordService(BaseService):
 
     async def build(self, audience: str, consent_id: str) -> Optional[tuple[str, bytes]]:
         """(file name, ZIP bytes) for the partner's consent; None if not theirs."""
-        artefact, use_cases = await self.assisted.get_consent(audience, consent_id)
+        artefact, templates = await self.assisted.get_consent(audience, consent_id)
         if artefact is None:
             return None
         async with async_session()() as session:
@@ -136,7 +136,7 @@ class ConsentRecordService(BaseService):
             "subject_id": {"type": artefact.subject_id_type, "value": artefact.subject_id_value},
             "subject_identifiers": artefact.subject_identifiers or [],
             "purpose": artefact.purpose or {},
-            "use_case": artefact.use_case or use_cases.get(artefact.consent_request_id),
+            "template": artefact.template or templates.get(artefact.consent_request_id),
             "grants": [
                 {"data_controller": g.get("data_controller"),
                  "data_scopes": g.get("effective_data_scopes") or []}
@@ -225,7 +225,7 @@ def _summary(s: dict) -> str:
         row("Subject", f"{e(s['subject_id']['type'])} {e(s['subject_id']['value'])}"),
         *[row(i["type"], e(i["value"])) for i in s.get("subject_identifiers") or []],
         row("Purpose", e(str(purpose.get("code") or purpose))),
-        row("Use case", e(s["use_case"] or "—")),
+        row("Consent template", e(s["template"] or "—")),
         row("Data", f"<ul>{grants}</ul>"),
         row("Valid", f"{e(s['valid_from'] or '—')} to {e(s['valid_until'] or '—')}"),
         row("Person authenticated", authenticated),

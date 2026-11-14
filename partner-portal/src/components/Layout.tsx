@@ -28,8 +28,8 @@ export default function Layout() {
           <NavLink to="/consents" className={navClass}>
             <ShieldCheck size={18} /> Consents
           </NavLink>
-          <NavLink to="/use-cases" className={navClass}>
-            <LayoutGrid size={18} /> {access.data && access.data.consent_by !== "use_case" ? "Data access" : "Use cases"}
+          <NavLink to="/templates" className={navClass}>
+            <LayoutGrid size={18} /> {access.data && access.data.consent_by !== "template" ? "Data access" : "Consent templates"}
           </NavLink>
           <NavLink to="/history" className={navClass}>
             <History size={18} /> History

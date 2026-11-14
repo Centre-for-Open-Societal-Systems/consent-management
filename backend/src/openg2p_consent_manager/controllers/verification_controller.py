@@ -30,7 +30,7 @@ consent JWS.
 
 **Request:** `consent_jws`, optional `partner_id` (the caller), optional
 `data_controller` (the calling registry), optional `request_context
-{requested_scopes, subject_id, use_case, purpose}`.
+{requested_scopes, subject_id, purpose, limits, template}`.
 
 - Consent with `grants`: `data_controller` is required (deny `malformed_object`
   if missing) and selects the grant (deny `controller_not_granted` if the
@@ -64,16 +64,20 @@ permit `consent_id`, `receipt_id`, `subject_id` (the consent's subject),
   `receipts: {data_controller: "<token JWS>"}` — one signed, short-lived
   consent token (`typ: consent-token+jwt`) per controller, verifiable with
   this CM's JWKS.
-- Use-case mode — a caller in `receipt_presenters` (the Composite) that sends
-  `request_context.use_case` (`name@major`, e.g. `loan-profile@1`): instead of
-  the partner's per-registry scope policies, its **policy for that use case**
-  in Partner Management applies (one policy per use case; deny
-  `use_case_not_granted` if it has none). The consent's purpose must equal
-  `request_context.purpose` when sent and be one the policy allows
-  (`purpose_not_allowed`); the policy's subject id types, signing algorithms
-  and maximum validity apply. Per registry, effective scopes =
-  consent grant ∩ `requested_scopes` (the use case's scopes). Without
-  `use_case`, the partner's scope policies apply as above.
+- Caller-terms mode — a caller in `receipt_presenters` (the Composite) that
+  sends `request_context.purpose`: instead of the partner's per-registry
+  scope policies, the **terms it sends** apply; the CM reads no partner
+  policy. The consent's purpose must equal `purpose` (`purpose_not_allowed`);
+  `requested_scopes` is required (`scope_exceeds_policy` without it) and is
+  the scope ceiling: per registry, effective scopes = consent grant ∩
+  `requested_scopes`. `limits` (each optional; absent = no limit):
+  `allowed_subject_id_types` (`subject_not_allowed`), `max_validity_duration`
+  (`validity_exceeds_policy`), `allowed_signing_algs` (`signature_invalid`)
+  and `allow_partner_consents` (absent = false). `template` is a label: the
+  decision log records `policy_ref: template:<code>` (no `policy_id` /
+  `policy_version`). `limits` or `template` from any other caller: deny
+  `caller_terms_not_allowed`; without `purpose`: deny `malformed_object`.
+  Without `purpose`, the partner's scope policies apply as above.
 - A consent token as `consent_jws` (department role) — accepted only from a
   configured trusted issuer (else deny `receipt_issuer_not_trusted`); its
   `aud` must be `data_controller` and its `presenter` the caller's
@@ -87,35 +91,36 @@ active (`revoked` / `expired` / `not_yet_valid`), obtained by
 `consent_partner_id` (`partner_mismatch`) and for the subject in
 `request_context.subject_id` (`subject_mismatch`). Per grant, effective scopes
 = the consent's effective scopes ∩ the partner's CURRENT policy for that
-controller in Partner Management (in use-case mode: its policy for the use case, as
-above) ∩ `requested_scopes`; a controller left with none is not granted.
+controller in Partner Management (in caller-terms mode: the consent's own
+scopes, with the terms' purpose and limits, as above) ∩ `requested_scopes`; a controller left with none is not granted.
 The permit carries `grants: {data_controller: [scopes]}` (also returned with
 `issue_receipts`); with `issue_receipts`, one receipt per granted controller.
 
-**Consent by lookup** (use-case mode only; neither `consent_jws` nor
+**Consent by lookup** (caller-terms mode only; neither `consent_jws` nor
 `consent_id`): `consent_partner_id`, `request_context.subject_id` and
-`request_context.use_case` are required and the caller must be a configured
+`request_context.purpose` are required and the caller must be a configured
 presenter (else deny `malformed_object`). The CM picks, among the consents it
 holds (originated ones, and partner-signed ones stored when first validated in
-use-case mode) of that partner, for that subject (type and value) and use case,
-active and valid now, the one with the latest `valid_until` (tie: the newest);
-none → deny `consent_not_found`. It is then validated as a stored consent
-(above); the decision carries its `consent_id`.
+caller-terms mode) of that partner, for that subject (type and value) and
+purpose, active and valid now, the one with the latest `valid_until` (tie: the
+newest); none → deny `consent_not_found`. It is then validated as a stored
+consent (above); the decision carries its `consent_id`.
 
-**Consent by lookup at a registry** (no use case; neither `consent_jws` nor
+**Consent by lookup at a registry** (neither `consent_jws` nor
 `consent_id`): `partner_id`, `data_controller` and
 `request_context.subject_id` are required (else deny `malformed_object`).
 Same selection among the consents of `partner_id` for that subject with a grant for `data_controller`; none → deny
-`consent_not_found`. Then the stored-consent path under the partner's scope
-policy for that registry.
+`consent_not_found`. Consents made from a consent template (exchange role)
+are not found this way: they are presented through the token presenter. Then
+the stored-consent path under the partner's scope policy for that registry.
 
 Both lookups match `request_context.subject_id` to the consent's subject or
 one of its `subject_identifiers` (e.g. FARMER_ID), type spelled exactly; the
 stored-consent subject check accepts the same.
 
 **Partner-signed consents** (`consent_jws` from a partner) are accepted only
-when the applicable policy (scope policy for the registry, or the use case's
-policy) sets `allow_partner_consents`; else deny
+when the applicable policy (scope policy for the registry, or in
+caller-terms mode the request's `limits`) sets `allow_partner_consents`; else deny
 `partner_consent_not_accepted`. Consents the CM holds (`consent_id`, lookup)
 and consent tokens are unaffected.
 """

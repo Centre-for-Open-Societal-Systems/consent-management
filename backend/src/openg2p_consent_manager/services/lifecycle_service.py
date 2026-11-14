@@ -18,16 +18,17 @@ from ..models import (
     RequestStatus,
 )
 from ..utils.canonical import iso_duration_to_timedelta
-from .composite_client import (
-    EXCHANGE_NEEDS_USE_CASE,
-    USE_CASE_REF,
-    CompositeClient,
-    CompositeUnavailable,
-    consent_by_use_case,
-)
 from .partner_service import PartnerService
 from .pm_policy_client import PolicyUnavailable, common_policy_fields, policy_fields
+from .policy_service import template_fields
 from .receipt_service import ReceiptService
+from .template_client import (
+    EXCHANGE_NEEDS_TEMPLATE,
+    TEMPLATE_CODE,
+    ConsentTemplateClient,
+    TemplateSourceUnavailable,
+    consent_by_template,
+)
 
 _config = Settings.get_config()
 _logger = logging.getLogger(_config.logging_default_logger_name)
@@ -51,20 +52,20 @@ class LifecycleService(BaseService):
         super().__init__(name, **kwargs)
         self.partners = PartnerService.get_component()
         self.receipts = ReceiptService.get_component()
-        self.composite = CompositeClient.get_component()
+        self.templates = ConsentTemplateClient.get_component()
 
     async def create_request(self, data) -> ConsentRequest:
         """``partner_id`` is the partner's audience. Each requested grant (or the
         single ``data_controller`` + ``requested_scopes``) must be within the
         partner's active policy for that controller in Partner Management.
 
-        Exchange role: the request must name a ``use_case`` and is made for it
-        — its grants and purpose are the Composite's use case, within the
-        partner's policy for that use case (see ``resolve_use_case``)."""
-        if consent_by_use_case() and data.use_case is None:
-            raise LifecycleError(400, EXCHANGE_NEEDS_USE_CASE)
-        if data.use_case is not None:
-            return await self._create_use_case_request(data)
+        Exchange role: the request must name a consent ``template`` offered to
+        the partner and is made from it — its purpose, scopes (``grants``, if
+        given, chosen within them) and limits (see ``resolve_template``)."""
+        if consent_by_template() and data.template is None:
+            raise LifecycleError(400, EXCHANGE_NEEDS_TEMPLATE)
+        if data.template is not None:
+            return await self._create_template_request(data)
         if data.grants is not None:
             requested = data.grants
         else:
@@ -103,16 +104,16 @@ class LifecycleService(BaseService):
             await session.refresh(req)
             return req
 
-    async def _create_use_case_request(self, data) -> ConsentRequest:
-        if not consent_by_use_case():
+    async def _create_template_request(self, data) -> ConsentRequest:
+        if not consent_by_template():
             raise LifecycleError(
-                422, "use_case is for the exchange role: give the grants instead"
+                422, "template is for the exchange role: give the grants instead"
             )
         validity = data.validity or {}
         purpose_code = (data.purpose or {}).get("code") if data.purpose else None
-        use_case, _, grants = await self.resolve_use_case(
-            data.partner_id, data.use_case, data.subject_id.type, purpose_code,
-            validity.get("valid_from"), validity.get("valid_until"),
+        template, grants = await self.resolve_template(
+            data.partner_id, data.template, data.subject_id.type, purpose_code,
+            validity.get("valid_from"), validity.get("valid_until"), chosen=data.grants,
         )
         async with async_session()() as session:
             req = ConsentRequest(
@@ -120,136 +121,174 @@ class LifecycleService(BaseService):
                 subject_id_value=data.subject_id.value,
                 controller_id=grants[0]["data_controller"] if len(grants) == 1 else None,
                 partner_id=data.partner_id,
-                purpose={"code": use_case.purpose},
+                purpose={"code": template.purpose},
                 requested_scopes=sorted({s for g in grants for s in g["data_scopes"]}),
                 grants=grants,
                 valid_from=validity.get("valid_from"),
                 valid_until=validity.get("valid_until"),
                 status=RequestStatus.pending.value,
-                use_case=use_case.ref,
+                template=template.code,
             )
             session.add(req)
             await session.commit()
             await session.refresh(req)
             return req
 
-    # ── Exchange role: consent by use case ──────────────────────────────────
+    # ── Exchange role: consent from a consent template ──────────────────────
 
-    async def use_case_policy(self, audience: str, ref: str):
-        """The partner's policy for use case ``ref`` in Partner Management, or
-        None (not granted). Raises LifecycleError(503) when PM cannot be
-        reached."""
+    async def read_template(self, audience: str, code: str):
+        """Consent template ``code`` as offered to the partner by the template
+        source. Raises LifecycleError: 503 when the source cannot be reached
+        (fail closed), 422 when it is not offered to the partner or a consent
+        cannot be made from it."""
+        if not code or not TEMPLATE_CODE.match(code):
+            raise LifecycleError(422, f"'{code}' is not a consent template code")
         try:
-            material = await self.partners.get_verification_material(
-                audience, None, use_case=ref
-            )
-        except PolicyUnavailable as exc:
-            raise LifecycleError(
-                503, "the partner's policy could not be read from Partner Management"
-            ) from exc
-        return material["policy"] if material else None
-
-    async def read_use_case(self, ref: str):
-        """The Composite's published use case ``ref``. Raises LifecycleError:
-        503 when the Composite cannot be reached (fail closed), 422 when it
-        publishes no such use case or one a consent cannot be made for."""
-        try:
-            use_case = await self.composite.get_use_case(ref)
-        except CompositeUnavailable as exc:
+            template = await self.templates.get_template(audience, code)
+        except TemplateSourceUnavailable as exc:
             raise LifecycleError(
                 503,
-                f"the Composite could not be reached to read use case '{ref}'; "
-                "a consent by use case cannot be made now",
+                f"the consent template source could not be reached to read template "
+                f"'{code}'; a consent from a template cannot be made now",
             ) from exc
-        if use_case is None:
-            raise LifecycleError(422, f"use case '{ref}' is not published on the Composite")
-        if use_case.unscoped_controllers or not use_case.grants:
+        if template is None:
             raise LifecycleError(
                 422,
-                f"use case '{ref}' does not name the scopes it needs from "
-                f"{', '.join(use_case.unscoped_controllers) or 'any registry'}: "
-                "a consent cannot be made for it",
+                f"template_not_offered: consent template '{code}' is not offered to "
+                "the partner",
             )
-        if not use_case.purpose:
-            raise LifecycleError(
-                422, f"use case '{ref}' names no purpose: a consent cannot be made for it"
-            )
-        return use_case
+        self.check_usable(template)
+        return template
 
-    async def granted_use_case(self, audience: str, ref: str):
-        """(the use case's policy, use case) when the partner has a policy for
-        ``ref`` in Partner Management. Raises LifecycleError (422
-        use_case_not_granted; 503)."""
-        if not ref or not USE_CASE_REF.match(ref):
-            raise LifecycleError(422, "use_case must be name@major, e.g. loan-profile@1")
-        policy = await self.use_case_policy(audience, ref)
-        if policy is None:
+    @staticmethod
+    def check_usable(template) -> None:
+        """A consent can be made from ``template``: it names a purpose and
+        scopes for every registry. Raises LifecycleError(422)."""
+        code = template.code
+        if template.unscoped_controllers or not template.grants:
             raise LifecycleError(
                 422,
-                f"use_case_not_granted: use case '{ref}' is not granted to the partner "
-                "in Partner Management",
+                f"consent template '{code}' names no scopes for "
+                f"{', '.join(template.unscoped_controllers) or 'any registry'}: "
+                "a consent cannot be made from it",
             )
-        return policy, await self.read_use_case(ref)
+        if not template.purpose:
+            raise LifecycleError(
+                422, f"consent template '{code}' names no purpose: a consent cannot be "
+                "made from it"
+            )
 
-    async def resolve_use_case(
-        self, audience: str, ref: str, subject_id_type: str,
+    @staticmethod
+    def max_validity(template) -> Optional[timedelta]:
+        """The template's longest validity, or None (no limit, or unreadable)."""
+        duration = template.limits.max_validity_duration
+        if not duration:
+            return None
+        try:
+            return iso_duration_to_timedelta(duration)
+        except ValueError:
+            _logger.warning(
+                "Invalid max_validity_duration on consent template %s: %s",
+                template.code, duration,
+            )
+            return None
+
+    @staticmethod
+    def chosen_grants(template, chosen) -> list:
+        """The template's grants with the scopes chosen (``chosen``: a list of
+        ``data_controller`` + ``data_scopes``; None = every scope). Each chosen
+        grant must be one of the template's registries, hold its required
+        scopes and stay within required ∪ optional; a registry with required
+        scopes cannot be left out. Raises LifecycleError(422)."""
+        by = {g["data_controller"]: g for g in template.grants}
+        if chosen is None:
+            return [
+                {"data_controller": c, "data_scopes": list(g["data_scopes"])}
+                for c, g in by.items()
+            ]
+        picked = {}
+        for g in chosen:
+            tg = by.get(g.data_controller)
+            if tg is None:
+                raise LifecycleError(
+                    422,
+                    f"data_controller '{g.data_controller}' is not in consent template "
+                    f"'{template.code}'",
+                )
+            scopes = set(g.data_scopes)
+            if not scopes.issubset(set(tg["data_scopes"])):
+                raise LifecycleError(
+                    422,
+                    f"scope_exceeds_template for data_controller '{g.data_controller}'",
+                )
+            missing = set(tg["required_scopes"]) - scopes
+            if missing:
+                raise LifecycleError(
+                    422,
+                    f"data_controller '{g.data_controller}' needs the template's "
+                    f"required scopes {sorted(missing)}",
+                )
+            picked[g.data_controller] = sorted(scopes)
+        left_out = [c for c, g in by.items() if g["required_scopes"] and c not in picked]
+        if left_out:
+            raise LifecycleError(
+                422, f"consent template '{template.code}' needs {', '.join(left_out)}"
+            )
+        return [{"data_controller": c, "data_scopes": s} for c, s in picked.items() if s]
+
+    async def resolve_template(
+        self, audience: str, code: str, subject_id_type: str,
         purpose_code: Optional[str] = None, valid_from=None, valid_until=None,
+        chosen=None,
     ):
-        """A consent for use case ``ref``: granted by the partner's policy for
-        that use case; its grants (controller → the use case's scopes) and purpose are
-        the Composite's use case; the policy's purposes, subject ID types and
-        maximum validity apply. Returns (use case, policy, grants)."""
-        policy, use_case = await self.granted_use_case(audience, ref)
-        if purpose_code and purpose_code != use_case.purpose:
+        """A consent from template ``code`` (offered to the partner by the
+        template source): its purpose; its grants (controller → scopes, chosen
+        within required / optional); its limits on subject ID types and
+        validity. Returns (template, grants)."""
+        template = await self.read_template(audience, code)
+        if purpose_code and purpose_code != template.purpose:
             raise LifecycleError(
                 422,
-                f"purpose '{purpose_code}' is not the purpose of use case '{ref}' "
-                f"('{use_case.purpose}')",
+                f"purpose '{purpose_code}' is not the purpose of consent template "
+                f"'{code}' ('{template.purpose}')",
             )
-        if policy.allowed_purposes and use_case.purpose not in policy.allowed_purposes:
-            raise LifecycleError(
-                422, f"purpose_not_allowed: '{use_case.purpose}' by the use case's policy"
-            )
+        limits = template.limits
         if (
-            policy.allowed_subject_id_types
-            and subject_id_type not in policy.allowed_subject_id_types
+            limits.allowed_subject_id_types
+            and subject_id_type not in limits.allowed_subject_id_types
         ):
             raise LifecycleError(
-                422, f"subject_not_allowed: '{subject_id_type}' by the use case's policy"
+                422, f"subject_not_allowed: '{subject_id_type}' by consent template '{code}'"
             )
-        if valid_until is not None and policy.max_validity_duration:
-            try:
-                limit = iso_duration_to_timedelta(policy.max_validity_duration)
-            except ValueError:
-                limit = None
+        limit = self.max_validity(template)
+        if valid_until is not None and limit is not None:
             start = _aware(valid_from) if valid_from else datetime.now(timezone.utc)
-            if limit is not None and _aware(valid_until) - start > limit:
-                raise LifecycleError(422, "validity_exceeds_policy: by the use case's policy")
+            if _aware(valid_until) - start > limit:
+                raise LifecycleError(
+                    422, f"validity_exceeds_policy: by consent template '{code}'"
+                )
         grants = [
             {
-                "data_controller": g["data_controller"],
-                "data_scopes": list(g["data_scopes"]),
-                **policy_fields(policy),
-                # Marks a grant made by use case (approval narrows to it).
-                "use_case": use_case.ref,
+                **g,
+                **template_fields(template.code),
+                # Marks a grant made from the template (approval narrows to it).
+                "template": template.code,
             }
-            for g in use_case.grants
+            for g in self.chosen_grants(template, chosen)
         ]
-        return use_case, policy, grants
+        return template, grants
 
-    async def use_case_ceiling(self, req):
-        """For approving a request made by use case (exchange role): (use-case
-        policy, {controller: the use case's scopes now}); the use case must
-        still be granted. None for any other request (whose use_case, if any,
-        is a label)."""
-        if not req.use_case or not any(
-            g.get("use_case") == req.use_case for g in req.grants or []
+    async def template_ceiling(self, req):
+        """For approving a request made from a consent template (exchange
+        role): (template, {controller: the template's scopes now}); the
+        template must still be offered to the partner. None for any other
+        request (whose template, if any, is a label)."""
+        if not req.template or not any(
+            g.get("template") == req.template for g in req.grants or []
         ):
             return None
-        policy, use_case = await self.granted_use_case(
-            req.partner_audience or req.partner_id, req.use_case
-        )
-        return policy, {g["data_controller"]: set(g["data_scopes"]) for g in use_case.grants}
+        template = await self.read_template(req.partner_audience or req.partner_id, req.template)
+        return template, {g["data_controller"]: set(g["data_scopes"]) for g in template.grants}
 
     async def current_policy(self, audience: str, controller: Optional[str]):
         """The partner's active policy for ``controller`` in Partner Management,
@@ -441,15 +480,15 @@ class LifecycleService(BaseService):
 
         grants = []
         fetch_type = None
-        # A request made for a use case (exchange role) is narrowed to the use
-        # case's scopes as they are now, not to scope policies.
-        ceiling = await self.use_case_ceiling(req)
+        # A request made from a consent template (exchange role) is narrowed to
+        # the template's scopes as they are now, not to scope policies.
+        ceiling = await self.template_ceiling(req)
         for controller, rg in requested.items():
             scopes = approved.get(controller) or []
             if not scopes:
                 continue  # declined by the subject
             if ceiling is not None:
-                policy, allowed = ceiling[0], ceiling[1].get(controller, set())
+                policy, allowed = None, ceiling[1].get(controller, set())
             else:
                 policy = await self.current_policy(req.partner_id, controller)
                 allowed = set(policy.allowed_data_scopes or []) if policy else set()
@@ -463,7 +502,10 @@ class LifecycleService(BaseService):
                     "data_scopes": rg["data_scopes"],
                     "granted_scopes": sorted(scopes),
                     "effective_data_scopes": effective,
-                    **policy_fields(policy),
+                    **(
+                        template_fields(ceiling[0].code) if ceiling is not None
+                        else policy_fields(policy)
+                    ),
                 }
             )
         if not grants:
@@ -471,13 +513,9 @@ class LifecycleService(BaseService):
 
         now = datetime.now(timezone.utc)
         default_validity = timedelta(days=365)
-        if ceiling is not None and ceiling[0].max_validity_duration:
-            try:
-                default_validity = min(
-                    default_validity, iso_duration_to_timedelta(ceiling[0].max_validity_duration)
-                )
-            except ValueError:
-                pass
+        limit = self.max_validity(ceiling[0]) if ceiling is not None else None
+        if limit is not None:
+            default_validity = min(default_validity, limit)
         artefact = ConsentArtefact(
             subject_id_type=req.subject_id_type,
             subject_id_value=req.subject_id_value,
@@ -496,7 +534,7 @@ class LifecycleService(BaseService):
             **common_policy_fields(grants),
             auth_context_id=ctx.id,
             consent_request_id=req.id,
-            use_case=req.use_case if ceiling is not None else None,
+            template=req.template if ceiling is not None else None,
             status=ArtefactStatus.active.value,
         )
         receipt = self.receipts.build_receipt(artefact)

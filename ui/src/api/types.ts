@@ -14,7 +14,8 @@ export interface DecisionLog {
   detail?: string | null;
   policy_version?: number | null;
   // The PM policy applied: PM's id of that version, and its kind:key
-  // ("use_case:loan-profile@1" / "data_controller:farmer-registry").
+  // ("data_controller:farmer-registry"; "template:loan-profile@1" when a token
+  // presenter sent a consent template's terms — no PM policy).
   policy_id?: string | null;
   policy_ref?: string | null;
   created_at: string;
@@ -64,7 +65,8 @@ export interface StaffConsent {
   valid_from: string;
   valid_until: string;
   assurance?: Record<string, unknown> | null;
-  use_case?: string | null;
+  // The consent template it was made from (a label).
+  template?: string | null;
   // The assisted request it came from: its evidence downloads from there.
   consent_request_id?: string | null;
   created_at: string;
@@ -99,7 +101,8 @@ export interface VerificationRequest {
   id: string;
   status: string;
   method?: string | null;
-  use_case?: string | null;
+  // The consent template the request was made from (a label).
+  template?: string | null;
   subject_id: { type: string; value: string };
   // Other identifiers of the subject (e.g. the Farmer ID); the approver checks
   // them in the registry.

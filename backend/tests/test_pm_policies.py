@@ -9,7 +9,7 @@ from test_grants import FR, FR_SCOPES, bind, validate
 
 POLICY = {
     "id": "p1", "partner_id": "PARTNER_BANK_X", "data_controller": FR, "version": 3,
-    "status": "active", "allowed_data_scopes": FR_SCOPES, "use_case": None,
+    "status": "active", "allowed_data_scopes": FR_SCOPES,
     "allowed_purposes": [], "allowed_subject_id_types": [], "allowed_signing_algs": ["EdDSA"],
     "max_validity_duration": "P1Y", "fetch_type": "oneshot", "max_fetch_frequency": None,
     "data_life": None, "effective_from": "2026-10-01T00:00:00Z",
@@ -68,9 +68,8 @@ def run(coro):
 def test_maps_policy_out(client):
     policy = run(client.get_policy("bank-x", FR))
     assert policy.version == 3 and policy.data_controller == FR
-    assert policy.allowed_data_scopes == FR_SCOPES and policy.use_case is None
+    assert policy.allowed_data_scopes == FR_SCOPES
     assert policy.max_validity_duration == "P1Y" and policy.fetch_type == "oneshot"
-    assert not policy.is_use_case
     # Another controller in the answer is not this controller's policy.
     assert run(client.get_policy("bank-x", "other-registry")) is None
 
@@ -147,7 +146,7 @@ def test_single_flight(client):
     assert client.pm.calls == 1
 
 
-def test_list_policies_and_use_case_query(client):
+def test_list_policies_and_controller_query(client):
     seen = []
     original = client.pm.handler
 
@@ -163,30 +162,17 @@ def test_list_policies_and_use_case_query(client):
     assert dict(seen[-1].url.params) == {"data_controller": FR}
 
 
-def test_use_case_policy_query_and_cache_key(client):
-    """One policy per use case: ?use_case=name@major, cached per use case
-    (separately from scope policies); a 404 means not granted."""
-    seen = []
-    uc_policy = {**POLICY, "data_controller": None, "use_case": "loan-profile@1",
-                 "allowed_data_scopes": [], "version": 2}
+def test_policies_without_a_data_controller_are_left_out(client):
+    """PM may hold other kinds of policy (no data controller); they are not
+    the Consent Manager's: list_policies leaves them out."""
+    other = {**POLICY, "data_controller": None, "allowed_data_scopes": [], "version": 2}
 
     async def handler(request):
-        seen.append(request)
-        wanted = request.url.params.get("use_case")
-        if wanted == "loan-profile@1":
-            return httpx.Response(200, json={"partner_id": "PARTNER_BANK_X",
-                                             "policies": [uc_policy]})
-        return httpx.Response(404, json={"errors": [{"code": "PM-POLICY-404"}]})
+        return httpx.Response(200, json={"partner_id": "PARTNER_BANK_Y",
+                                         "policies": [POLICY, other]})
 
     client.transport = httpx.MockTransport(handler)
-    policy = run(client.get_use_case_policy("bank-x", "loan-profile@1"))
-    assert policy.use_case == "loan-profile@1" and policy.is_use_case and policy.version == 2
-    assert dict(seen[-1].url.params) == {"use_case": "loan-profile@1"}
-    assert run(client.get_use_case_policy("bank-x", "other@1")) is None
-    calls = len(seen)
-    run(client.get_use_case_policy("bank-x", "loan-profile@1"))
-    run(client.get_use_case_policy("bank-x", "other@1"))  # negative TTL
-    assert len(seen) == calls
+    assert [p.data_controller for p in run(client.list_policies("bank-y"))] == [FR]
 
 
 # ── /validate with PM unreachable ────────────────────────────────────────────

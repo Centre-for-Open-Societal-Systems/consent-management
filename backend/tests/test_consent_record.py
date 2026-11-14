@@ -79,7 +79,7 @@ def test_record_ties_receipt_and_evidence(call, portal, as_partner, bank, upload
     # When the CM verified, not which staff member.
     assert statement["verified_by"] == "Consent Manager" and statement["verified_at"]
     assert "dev" not in json.dumps(statement["verified_by"])
-    assert statement["status"] == "active" and statement["use_case"] == "loan-profile@1"
+    assert statement["status"] == "active" and statement["template"] == "loan-profile@1"
     assert consent_id in z.read("summary.html").decode()
 
 

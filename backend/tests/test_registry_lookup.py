@@ -98,11 +98,11 @@ def test_finds_a_partner_signed_consent_after_first_use(call, partner):
     assert lookup(call, partner.audience, CSR)["reason_code"] == "consent_not_found"
 
 
-def test_use_case_consent_not_found_at_a_registry(call, run, partner):
-    """A consent given for a use case serves only that use case (through the
-    Composite), not a direct call to the registry."""
+def test_template_consent_not_found_at_a_registry(call, run, partner):
+    """A consent made from a consent template (exchange role) is presented
+    through the token presenter, not by a direct call to the registry."""
     consent_id = originate(call, partner)
-    set_artefact(run, consent_id, use_case="loan-profile@1")
+    set_artefact(run, consent_id, template="loan-profile@1")
     assert lookup(call, partner.audience, FR)["reason_code"] == "consent_not_found"
 
 
@@ -168,19 +168,26 @@ def test_lookup_needs_partner_subject_and_controller(call, partner):
         assert body["decision"] == "deny" and body["reason_code"] == "malformed_object", body
 
 
-def test_use_case_mode_lookup_unaffected(call, cfg, pm, partner):
-    """A registry consent (no use case) is not found by the Composite's
-    lookup, and a use case sent by a non-presenter is ignored."""
-    originate(call, partner)
+def test_terms_mode_lookup_is_by_purpose(call, cfg, partner):
+    """The presenter's lookup is by (partner, subject, purpose): a registry
+    consent for that purpose is found, under the terms sent (no scope
+    policy). A purpose sent by a registry is not a term."""
+    consent_id = originate(call, partner)
     exchange_on(cfg)
-    pm.grant_use_cases(partner.audience, ["loan-profile@1"])
     body = post(call, {
         "partner_id": PRESENTER, "consent_partner_id": partner.audience,
-        "request_context": {"subject_id": SUBJECT, "use_case": "loan-profile@1",
-                            "purpose": "credit-assessment"},
+        "request_context": {"subject_id": SUBJECT, "purpose": "credit-assessment",
+                            "requested_scopes": ["farmer_personal_details"]},
     })
-    assert body["decision"] == "deny" and body["reason_code"] == "consent_not_found", body
-    body = lookup(call, partner.audience, FR, use_case="loan-profile@1")
+    assert body["decision"] == "permit" and body["consent_id"] == consent_id, body
+    assert body["grants"] == {FR: ["farmer_personal_details"]}
+    body = post(call, {
+        "partner_id": PRESENTER, "consent_partner_id": partner.audience,
+        "request_context": {"subject_id": SUBJECT, "purpose": "insurance",
+                            "requested_scopes": ["farmer_personal_details"]},
+    })
+    assert body["reason_code"] == "consent_not_found", body
+    body = lookup(call, partner.audience, FR, purpose="insurance")
     assert body["decision"] == "permit", body
 
 
@@ -208,15 +215,15 @@ def test_partner_signed_consent_denied_without_the_flag(call, pm, new_partner):
     assert validate(call, p.sign(p.claims(grants=[FR_GRANT])), FR)["decision"] == "permit"
 
 
-def test_partner_signed_consent_denied_in_use_case_mode(call, cfg, pm, new_partner):
+def test_partner_signed_consent_denied_in_terms_mode(call, cfg, new_partner):
     exchange_on(cfg)
     p = new_partner()
-    pm.grant_use_cases(p.audience, ["loan-profile@1"], allow_partner_consents=False)
     body = post(call, {
         "consent_jws": p.sign(p.claims(grants=GRANTS)), "partner_id": PRESENTER,
         "data_controller": FR,
-        "request_context": {"subject_id": SUBJECT, "use_case": "loan-profile@1",
-                            "purpose": "credit-assessment"},
+        "request_context": {"subject_id": SUBJECT, "purpose": "credit-assessment",
+                            "requested_scopes": ["farmer_personal_details"],
+                            "limits": {"allow_partner_consents": False}},
     })
     assert body["decision"] == "deny", body
     assert body["reason_code"] == "partner_consent_not_accepted"

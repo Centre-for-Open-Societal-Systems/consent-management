@@ -162,11 +162,11 @@ export default function VerificationDetailPage() {
               <th>Purpose</th>
               <td>{purposeText(r.purpose)}</td>
             </tr>
-            {r.use_case && (
+            {r.template && (
               <tr>
-                <th>Use case</th>
+                <th>Consent template</th>
                 <td>
-                  <code className="mono">{r.use_case}</code>
+                  <code className="mono">{r.template}</code>
                 </td>
               </tr>
             )}

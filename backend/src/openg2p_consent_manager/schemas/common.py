@@ -46,13 +46,13 @@ class ReasonCode(str, Enum):
     # Partner Management could not be reached and no policy answer is cached
     # (fail closed; retry later).
     policy_unavailable = "policy_unavailable"
-    # Use-case mode: the partner has no policy for request_context.use_case in
-    # Partner Management (one policy per use case), or a stored consent was
-    # given for another use case.
-    use_case_not_granted = "use_case_not_granted"
+    # request_context carries terms (limits, template) but the caller is not a
+    # configured token presenter (receipt_presenters): only a presenter may
+    # send the terms of a request.
+    caller_terms_not_allowed = "caller_terms_not_allowed"
     # Consent by lookup (neither consent_jws nor consent_id): the CM holds no
-    # active, valid consent of that partner for that subject and use case (or,
-    # without a use case, data controller).
+    # active, valid consent of that partner for that subject and purpose
+    # (caller-terms mode) or data controller (a registry).
     consent_not_found = "consent_not_found"
     # A partner-signed consent (consent_jws) presented by a partner whose
     # applicable policy does not set allow_partner_consents.

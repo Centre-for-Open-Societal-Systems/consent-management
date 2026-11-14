@@ -1,6 +1,6 @@
 // Checkbox group for a closed multi-choice list (copied from the CM console,
 // ui/src/components/FormControls.tsx). Values selected but not offered (e.g. a
-// use case scope the partner may not ask for) stay visible, flagged.
+// scope the partner may not ask for) stay visible, flagged.
 import { useId } from "react";
 
 export function CheckboxGroup({

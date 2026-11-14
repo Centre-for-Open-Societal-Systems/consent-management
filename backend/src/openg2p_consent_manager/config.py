@@ -127,9 +127,8 @@ class Settings(BaseSettings):
     # ── Partner access policies (Partner Management service) ────────────────
     # What a partner may access is its policy in PM, read from PM's internal
     # policy API: GET {partner_mgmt_api_url}/policies/PARTNER_<AUD>
-    # ?data_controller=<controller> (a scope policy) or ?use_case=<name@major>
-    # (one use-case policy per use case). Cached per pod and per (partner,
-    # controller | use case), as the keys are.
+    # ?data_controller=<controller> (a scope policy, one per controller).
+    # Cached per pod and per (partner, controller), as the keys are.
     # Soft TTL: refresh window; capped by PM's Cache-Control max-age when smaller.
     partner_policy_cache_ttl_seconds: int = 60
     # Hard TTL: while PM is unreachable, serve its last answer up to this age,
@@ -193,15 +192,20 @@ class Settings(BaseSettings):
     receipt_jwks_refresh_cooldown_seconds: int = 10
     receipt_fetch_timeout_seconds: float = 3.0
     # Exchange role (receipt_issuer and receipt_presenters set): consents made
-    # here through the partner portal or the lifecycle API are made for a use
-    # case (`name@major`) for which the partner has a policy in Partner
-    # Management (one policy per use case). The use case's purpose and per-registry scopes are read
-    # from the Composite: GET {composite_api_url}/composite/v1/use-cases/{ref}.
+    # here through the partner portal or the lifecycle API are made from a
+    # consent template offered to the partner — a code, title, purpose, the
+    # scopes per registry (required / optional) and limits (subject ID types,
+    # longest validity). Templates are read from a template source (at the
+    # Agri Stack Exchange, the Composite's internal endpoint), the URL of its
+    # template collection:
+    #   GET {consent_template_source_url}?partner=<audience>
+    #   GET {consent_template_source_url}/{code}?partner=<audience>
     # Empty → such consents cannot be made (503, fail closed).
-    composite_api_url: str = ""  # e.g. http://agri-composite-api
-    composite_fetch_timeout_seconds: float = 3.0
-    # How long a use case read from the Composite is reused (per pod).
-    composite_use_case_cache_ttl_seconds: int = 60
+    consent_template_source_url: str = ""  # e.g. http://agri-composite-api/composite/v1/internal/consent-templates
+    consent_template_fetch_timeout_seconds: float = 3.0
+    # How long a template answer is reused (per pod); capped by the source's
+    # Cache-Control max-age when smaller.
+    consent_template_cache_ttl_seconds: int = 60
 
     # ── Partner portal: partner users (consent scenario 1) — off by default ──
     # Partner users log in to the Keycloak `partner` realm (not the staff realm)

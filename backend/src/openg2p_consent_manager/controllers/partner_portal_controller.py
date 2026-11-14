@@ -34,7 +34,7 @@ from ..services import (
     MasterDataClient,
     SubjectAuthService,
 )
-from ..services.composite_client import consent_by_use_case
+from ..services.template_client import consent_by_template
 from .assisted_views import (
     consent_view,
     error,
@@ -131,9 +131,9 @@ class PartnerPortalController(BaseController):
         )
 
     async def access(self, user: PartnerUser = Depends(current_partner_user)):
-        """What the partner may ask for: at the Exchange, one entry per use-case
-        policy in Partner Management (purpose and scopes per registry from the
-        Composite); elsewhere its scope policies."""
+        """What the partner may ask for: at the Exchange, the consent templates
+        offered to it by the template source (purpose, scopes per registry and
+        limits); elsewhere its scope policies."""
         try:
             view = await self.assisted.access(user.partner_id)
         except LifecycleError as exc:
@@ -264,7 +264,7 @@ class PartnerPortalController(BaseController):
                 values=[CodeOption(code=c, label=label) for c, label in codes.values],
             )
         return RequestSettings(
-            consent_by="use_case" if consent_by_use_case() else "scopes",
+            consent_by="template" if consent_by_template() else "scopes",
             required_subject_identifiers=_config.subject_required_identifiers,
             subject_auth=await self.subject_auth_config(user),
             **lists,
@@ -319,18 +319,18 @@ class PartnerPortalController(BaseController):
         limit: int = Query(50, ge=1, le=200),
         offset: int = Query(0, ge=0),
     ) -> PartnerConsentList:
-        total, rows, use_cases = await self.assisted.list_consents(
+        total, rows, templates = await self.assisted.list_consents(
             user.partner_id, status, limit, offset
         )
-        return PartnerConsentList(total=total, items=[consent_view(a, use_cases) for a in rows])
+        return PartnerConsentList(total=total, items=[consent_view(a, templates) for a in rows])
 
     async def get_consent(
         self, consent_id: str, user: PartnerUser = Depends(current_partner_user)
     ):
-        artefact, use_cases = await self.assisted.get_consent(user.partner_id, consent_id)
+        artefact, templates = await self.assisted.get_consent(user.partner_id, consent_id)
         if artefact is None:
             return not_found()
-        return consent_view(artefact, use_cases)
+        return consent_view(artefact, templates)
 
     async def get_receipt(
         self, consent_id: str, user: PartnerUser = Depends(current_partner_user)

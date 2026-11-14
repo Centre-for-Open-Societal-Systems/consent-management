@@ -1,7 +1,7 @@
 import { useAccess } from "../api/hooks";
-import type { ScopePolicy, UseCaseAccess } from "../api/types";
+import type { ConsentTemplate, ScopePolicy } from "../api/types";
 import { ErrorNotice } from "../components/Status";
-import { UseCaseFacts } from "../components/UseCaseFacts";
+import { TemplateFacts } from "../components/TemplateFacts";
 
 function Chips({ values, empty }: { values: string[]; empty: string }) {
   if (!values.length) return <span className="muted">{empty}</span>;
@@ -42,46 +42,47 @@ function ScopePolicyCard({ b }: { b: ScopePolicy }) {
   );
 }
 
-function UseCaseCard({ u }: { u: UseCaseAccess }) {
+function TemplateCard({ t }: { t: ConsentTemplate }) {
   return (
     <div className="card">
       <div className="spread" style={{ alignItems: "flex-start" }}>
         <div>
-          <h3 style={{ margin: 0 }}>{u.title || u.use_case}</h3>
+          <h3 style={{ margin: 0 }}>{t.title || t.code}</h3>
           <div className="muted">
-            <code className="mono">{u.use_case}</code> · policy v{u.policy_version}
+            <code className="mono">{t.code}</code>
           </div>
         </div>
       </div>
-      {u.description && <p style={{ marginTop: 0 }}>{u.description}</p>}
-      {!u.available && <div className="notice notice-error">{u.detail || "Not available now."}</div>}
-      {u.available && <UseCaseFacts u={u} />}
-      {u.allowed_subject_id_types.length > 0 && (
-        <div className="muted">Subject ID types accepted: {u.allowed_subject_id_types.join(", ")}</div>
+      {t.description && <p style={{ marginTop: 0 }}>{t.description}</p>}
+      {t.available === false && <div className="notice notice-error">{t.detail || "Not available now."}</div>}
+      {t.available !== false && <TemplateFacts t={t} />}
+      {t.allowed_subject_id_types.length > 0 && (
+        <div className="muted">Subject ID types accepted: {t.allowed_subject_id_types.join(", ")}</div>
       )}
-      {u.max_validity_duration && (
-        <div className="muted">Consent valid for at most {u.max_validity_duration}</div>
+      {t.max_validity_duration && (
+        <div className="muted">Consent valid for at most {t.max_validity_duration}</div>
       )}
     </div>
   );
 }
 
-// Read-only: what the partner may ask consent for. At the Exchange, its use
-// cases (one per use-case policy; purpose and data per registry from the
-// Composite); elsewhere its data access per registry (scope policies). Both are
-// set in Partner Management, not here; new consents start on the Consents page.
-export default function UseCasesPage() {
+// Read-only: what the partner may ask consent for. At the Exchange, the consent
+// templates offered to it (purpose, data per registry and limits, from the
+// Consent Manager's template source); elsewhere its data access per registry
+// (scope policies in Partner Management). Neither is set here; new consents
+// start on the Consents page.
+export default function TemplatesPage() {
   const { data, isLoading, error } = useAccess();
-  const byUseCase = data?.consent_by === "use_case";
+  const byTemplate = data?.consent_by === "template";
 
   return (
     <div>
-      <h1>{byUseCase ? "Use cases" : "Data access"}</h1>
-      {byUseCase ? (
+      <h1>{byTemplate ? "Consent templates" : "Data access"}</h1>
+      {byTemplate ? (
         <p className="muted page-intro">
-          The use cases approved for your organisation, for information. A consent is asked for one
-          use case: the subject agrees to share the data it needs from each registry, for its
-          purpose. To add or change one, ask the Partner Management administrator.
+          The consent templates offered to your organisation, for information. A consent is asked
+          from one template: the subject agrees to share the data it names from each registry, for
+          its purpose. To add or change one, ask the Partner Management administrator.
         </p>
       ) : (
         <p className="muted page-intro">
@@ -92,23 +93,23 @@ export default function UseCasesPage() {
       )}
 
       {isLoading && <div className="loading">Loading…</div>}
-      {error && <ErrorNotice error={error} what={byUseCase ? "your use cases" : "your data access"} />}
+      {error && <ErrorNotice error={error} what={byTemplate ? "your consent templates" : "your data access"} />}
 
-      {data && byUseCase && data.use_cases.length === 0 && (
+      {data && byTemplate && data.templates.length === 0 && (
         <div className="card">
-          Your organisation is granted no use case yet, so it cannot request consent. Ask the
-          Partner Management administrator to grant one.
+          No consent template is offered to your organisation yet, so it cannot request consent.
+          Ask the Partner Management administrator.
         </div>
       )}
-      {data && !byUseCase && data.scope_policies.length === 0 && (
+      {data && !byTemplate && data.scope_policies.length === 0 && (
         <div className="card">
           Your organisation has no active data-share policy yet, so it cannot request consent. Ask
           the Consent Manager / Partner Management administrator to set one in Partner Management.
         </div>
       )}
 
-      {byUseCase
-        ? data?.use_cases.map((u) => <UseCaseCard key={u.use_case} u={u} />)
+      {byTemplate
+        ? data?.templates.map((t) => <TemplateCard key={t.code} t={t} />)
         : data?.scope_policies.map((b) => <ScopePolicyCard key={b.data_controller} b={b} />)}
     </div>
   );

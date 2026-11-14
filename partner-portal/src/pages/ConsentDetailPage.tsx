@@ -106,11 +106,11 @@ export default function ConsentDetailPage() {
           ))}
           <dt>Purpose</dt>
           <dd>{purposeLabel(c.purpose)}</dd>
-          {c.use_case && (
+          {c.template && (
             <>
-              <dt>Use case</dt>
+              <dt>Consent template</dt>
               <dd>
-                <code className="mono">{c.use_case}</code>
+                <code className="mono">{c.template}</code>
               </dd>
             </>
           )}

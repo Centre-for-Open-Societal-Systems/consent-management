@@ -1,34 +1,26 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, compositeUrl } from "../api/client";
-import { useAccess, useRequestSettings, useUseCases } from "../api/hooks";
-import type { ConsentRequestCreate, ScopePolicy, UseCase } from "../api/types";
+import { api, ApiError } from "../api/client";
+import { useAccess, useRequestSettings } from "../api/hooks";
+import type { ConsentRequestCreate, ScopePolicy } from "../api/types";
 import { CheckboxGroup, CodeSelect, codeLabels } from "../components/FormControls";
 import { ErrorNotice } from "../components/Status";
-import UseCaseRequestForm from "../components/UseCaseRequestForm";
+import TemplateRequestForm from "../components/TemplateRequestForm";
 import { dayEnd, dayStart, today } from "../format";
 
 // The ID types a partner user can enter when Master Data has no list of
 // subject ID types; types allowed by the partner's policies are added to these.
 const BASE_ID_TYPES = ["FAYDA_FAN", "FARMER_ID"];
 
-// Scopes per registry, prefilled from a use case: required + optional.
-function scopesFromUseCase(u: UseCase): Record<string, string[]> {
-  const out: Record<string, string[]> = {};
-  for (const [controller, s] of Object.entries(u.consent_scopes ?? {})) {
-    out[controller] = [...new Set([...(s.required ?? []), ...(s.optional ?? [])])];
-  }
-  return out;
-}
-
-// At the Exchange (consent_by "use_case") a request names a granted use case;
-// elsewhere it names registries and data within the scope policies.
+// At the Exchange (consent_by "template") a request names a consent template
+// offered to the partner; elsewhere it names registries and data within the
+// scope policies.
 export default function NewRequestPage() {
   const settings = useRequestSettings();
   if (settings.isLoading) return <div className="loading">Loading…</div>;
   if (settings.error) return <ErrorNotice error={settings.error} what="the request settings" />;
-  if (settings.data?.consent_by === "use_case") return <UseCaseRequestForm />;
+  if (settings.data?.consent_by === "template") return <TemplateRequestForm />;
   return <ScopeRequestForm />;
 }
 
@@ -36,11 +28,8 @@ function ScopeRequestForm() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [params] = useSearchParams();
-  const useCaseRef = params.get("use_case") ?? "";
 
   const access = useAccess();
-  const useCases = useUseCases(!!useCaseRef && !!compositeUrl());
-  const useCase = useCases.data?.find((u) => u.use_case === useCaseRef);
 
   const [idType, setIdType] = useState("FAYDA_FAN");
   const [idValue, setIdValue] = useState("");
@@ -52,21 +41,8 @@ function ScopeRequestForm() {
   const [scopes, setScopes] = useState<Record<string, string[]>>({});
   const [validFrom, setValidFrom] = useState("");
   const [validUntil, setValidUntil] = useState("");
-  const [useCaseLabel, setUseCaseLabel] = useState(useCaseRef);
-  const [prefilledFrom, setPrefilledFrom] = useState<string | null>(null);
+  const [templateLabel, setTemplateLabel] = useState(params.get("template") ?? "");
   const [touched, setTouched] = useState(false);
-
-  // Prefill once from the use case: grants = required + optional scopes per
-  // registry, purpose = the use case's purpose, use_case = its ref.
-  useEffect(() => {
-    if (!useCase || prefilledFrom === useCase.use_case) return;
-    setScopes(scopesFromUseCase(useCase));
-    if (useCase.purpose) setPurpose(useCase.purpose);
-    setUseCaseLabel(useCase.use_case);
-    const idTypes = useCase.input?.subject?.id_types ?? [];
-    if (idTypes.length) setIdType(idTypes[0]);
-    setPrefilledFrom(useCase.use_case);
-  }, [useCase, prefilledFrom]);
 
   const list: ScopePolicy[] = useMemo(() => access.data?.scope_policies ?? [], [access.data]);
   const byController = useMemo(
@@ -76,7 +52,7 @@ function ScopeRequestForm() {
   const selected = Object.entries(scopes)
     .filter(([, s]) => s.length > 0)
     .map(([c]) => c);
-  // Registries the use case needs that this partner has no policy for.
+  // Registries asked for that this partner has no policy for.
   const unbound = Object.keys(scopes).filter((c) => !byController[c] && scopes[c].length > 0);
 
   // Master Data code lists (null: free text).
@@ -144,7 +120,7 @@ function ScopeRequestForm() {
         if (validFrom) body.validity.valid_from = dayStart(validFrom);
         if (validUntil) body.validity.valid_until = dayEnd(validUntil);
       }
-      if (useCaseLabel.trim()) body.use_case = useCaseLabel.trim();
+      if (templateLabel.trim()) body.template = templateLabel.trim();
       return api.createRequest(body);
     },
     onSuccess: (r) => {
@@ -171,21 +147,6 @@ function ScopeRequestForm() {
         Raise a request while the subject is with you. Next, upload the consent form the subject
         signed and submit the request for verification.
       </p>
-
-      {useCaseRef && useCases.isLoading && <div className="loading">Loading the use case…</div>}
-      {useCaseRef && useCases.error && <ErrorNotice error={useCases.error} what="the use case" />}
-      {useCaseRef && useCases.data && !useCase && (
-        <div className="notice notice-error">
-          Use case <code className="mono">{useCaseRef}</code> is not published.
-        </div>
-      )}
-      {useCase && (
-        <div className="notice notice-info">
-          Prefilled from use case <strong>{useCase.title || useCase.name}</strong> (
-          <code className="mono">{useCase.use_case}</code>): all its required and optional data.
-          Untick optional data the subject does not agree to share.
-        </div>
-      )}
 
       {access.isLoading && <div className="loading">Loading your policies…</div>}
       {access.error && <ErrorNotice error={access.error} what="your policies" />}
@@ -250,12 +211,12 @@ function ScopeRequestForm() {
                 />
               </div>
               <div className="field">
-                <label htmlFor="use-case">Use case (optional)</label>
+                <label htmlFor="template">Consent template (optional)</label>
                 <input
-                  id="use-case"
+                  id="template"
                   type="text"
-                  value={useCaseLabel}
-                  onChange={(e) => setUseCaseLabel(e.target.value)}
+                  value={templateLabel}
+                  onChange={(e) => setTemplateLabel(e.target.value)}
                   placeholder="e.g. loan-profile@1"
                 />
                 <div className="hint">A label shown with the request; the data asked for is below.</div>

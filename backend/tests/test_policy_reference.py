@@ -11,14 +11,13 @@ from test_assisted_consent import (  # noqa: F401 (fixtures)
 )
 from test_exchange import cfg, exchange_on  # noqa: F401 (fixture)
 from test_grants import CSR, CSR_SCOPES, FR, FR_SCOPES, GRANTS, bind, validate
-from test_use_case_mode import USE_CASE, issue
+from test_caller_terms_mode import TEMPLATE, issue
 
 
-def policy_of(pm, audience, *, data_controller=None, use_case=None):
+def policy_of(pm, audience, *, data_controller=None):
     from openg2p_consent_manager.services import pm_partner_id
 
-    key = ("use_case", use_case) if use_case else ("data_controller", data_controller)
-    return pm.policies[pm_partner_id(audience)][key]
+    return pm.policies[pm_partner_id(audience)][("data_controller", data_controller)]
 
 
 def decisions(call, audience):
@@ -50,27 +49,23 @@ def test_deny_after_policy_read_records_the_policy(call, pm, new_partner):
     assert row["policy_id"] == policy_of(pm, p.audience, data_controller=FR)["id"]
 
 
-def test_use_case_policy_reference(call, cfg, pm, new_partner):  # noqa: F811
+def test_caller_terms_reference(call, cfg, pm, new_partner):  # noqa: F811
+    """Caller-terms mode reads no PM policy: the template the presenter named
+    is the reference; nothing else."""
     exchange_on(cfg)
     p = new_partner()
-    pm.grant(p.audience, None, use_case=USE_CASE)
-    pm.grant(p.audience, None, use_case=USE_CASE)  # version 2
-    policy = policy_of(pm, p.audience, use_case=USE_CASE)
     body = issue(call, p, claims=p.claims(grants=GRANTS))
     assert body["decision"] == "permit", body
     rows = [r for r in decisions(call, p.audience) if r["decision"] == "permit"]
     assert rows and all(
         (r["policy_id"], r["policy_ref"], r["policy_version"])
-        == (policy["id"], f"use_case:{USE_CASE}", 2)
+        == (None, f"template:{TEMPLATE}", None)
         for r in rows
     )
-    # No policy for the use case: nothing to reference.
-    body = issue(call, p, use_case="crop-insurance@1")
-    assert body["reason_code"] == "use_case_not_granted"
-    # (Denied before the signature is verified: not attributed to the partner.)
-    _, rows = call("GET", "/consent/v1/decisions", params={"decision": "deny"})
-    row = next(r for r in rows if r["reason_code"] == "use_case_not_granted")
-    assert row["policy_id"] is None and row["policy_ref"] is None
+    body = issue(call, p, purpose="insurance")
+    assert body["reason_code"] == "purpose_not_allowed"
+    row = next(r for r in decisions(call, p.audience) if r["reason_code"] == "purpose_not_allowed")
+    assert row["policy_id"] is None and row["policy_ref"] == f"template:{TEMPLATE}"
 
 
 def test_originated_consent_records_the_policy(call, portal, as_partner, pm, upload,  # noqa: F811
@@ -90,7 +85,7 @@ def test_originated_consent_records_the_policy(call, portal, as_partner, pm, upl
 def test_common_policy_fields():
     from openg2p_consent_manager.services.pm_policy_client import common_policy_fields
 
-    one = {"policy_version": 1, "policy_id": "a", "policy_ref": "use_case:x@1"}
+    one = {"policy_version": 1, "policy_id": "a", "policy_ref": "data_controller:x"}
     assert common_policy_fields([one, dict(one)]) == one
     assert common_policy_fields([one, {**one, "policy_id": "b"}]) == {
         "policy_version": None, "policy_id": None, "policy_ref": None}

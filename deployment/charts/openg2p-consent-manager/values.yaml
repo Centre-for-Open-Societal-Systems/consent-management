@@ -101,8 +101,8 @@ global:
   # in the settings and API) between Consent Managers. Leave everything empty for a
   # standalone install: nothing is rendered and CM behaves exactly as before.
   # `role` picks working defaults: exchange (issues tokens to the composite;
-  # with the partner portal, national-ID login on, Farmer ID required, the
-  # composite at agri-composite.<this domain>) or department (trusts the
+  # with the partner portal, national-ID login on, Farmer ID required, consent
+  # templates from the in-namespace Composite) or department (trusts the
   # exchange CM at exchangeDomain). Empty fields below take those defaults.
   # Without a role, the fields act as set. `enabled` is the older Rancher switch.
   agriStackExchange:
@@ -124,12 +124,13 @@ global:
     # Token lifetime (capped by the consent's expiry).
     receiptTtlSeconds: 300
     # Exchange role: consents made through the partner portal or the lifecycle
-    # API are made for a use case granted to the partner in Partner
-    # Management; its purpose and per-registry scopes are read from the
-    # Composite's API (GET /composite/v1/use-cases/{name@major}). Empty = the
-    # in-namespace Composite service below (exchange role); unset elsewhere.
-    compositeApiUrl: ''
-    defaultCompositeApiUrl: http://agri-composite-api
+    # API are made from a consent template offered to the partner (purpose,
+    # scopes per registry, limits), read from this template source: the URL
+    # of its template collection (GET <url>?partner=<id>, GET <url>/<code>
+    # ?partner=<id>), in-cluster. Empty = the in-namespace Composite's internal
+    # endpoint below (exchange role); unset elsewhere.
+    consentTemplateSourceUrl: ''
+    defaultConsentTemplateSourceUrl: http://agri-composite-api/composite/v1/internal/consent-templates
     # Department role (`trial`, `csr`): exchange CMs whose consent tokens /validate
     # accepts — list of {issuer, jwks_url, presenter, status_url?}; jwks_url is
     # the exchange CM partner api's /.well-known/jwks.json. The presenter needs
@@ -375,9 +376,6 @@ partnerPortal:
   # the portal host to the staff api (no CORS needed). Set a full URL only if
   # that host allows the portal origin (CORS).
   apiBaseUrl: ''
-  # Optional Agri Stack composite base URL (e.g. https://composite.<domain>);
-  # when set the portal shows the use-case catalogue (GET /composite/v1/use-cases).
-  compositeUrl: ''
   keycloak:
     # Public Keycloak URL (browser login + the `iss` of partner tokens).
     url: '{{ tpl .Values.global.keycloakBaseUrl $ }}'

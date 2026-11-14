@@ -1,6 +1,6 @@
 """Consent by lookup (G2P-5719, contract §12): the Composite calls /validate in
-use-case mode with neither consent_jws nor consent_id; the Exchange CM finds
-the consent it holds for (consent_partner_id, subject, use case) and validates
+caller-terms mode with neither consent_jws nor consent_id; the Exchange CM finds
+the consent it holds for (consent_partner_id, subject, purpose) and validates
 it as a stored consent. Also: the department's token status check is off by
 default."""
 from datetime import datetime, timedelta, timezone
@@ -21,26 +21,27 @@ from test_exchange import (  # noqa: F401 (fixture)
     post,
 )
 from test_grants import CSR, FR, GRANTS, bind
-from test_use_case_consent import (  # noqa: F401 (fixtures)
-    OTHER,
+from test_template_consent import (  # noqa: F401 (fixtures)
     SUBJECT,
-    USE_CASE,
+    TEMPLATE,
     approve_assisted,
     bank,
-    composite,
     exchange,
+    templates,
 )
 
 SCOPES = ["farmer_personal_details", "crop_season", "measures"]
 
 
-def lookup(call, audience, subject=SUBJECT, use_case=USE_CASE, partner_id=PRESENTER, **extra):
+def lookup(call, audience, subject=SUBJECT, purpose="credit-assessment", partner_id=PRESENTER,
+           **extra):
+    context = {"subject_id": subject, "purpose": purpose, "requested_scopes": SCOPES,
+               "template": TEMPLATE}
+    if partner_id != PRESENTER:
+        context.pop("template")
     return post(call, {
         "consent_partner_id": audience, "partner_id": partner_id, "issue_receipts": True,
-        "request_context": {
-            "subject_id": subject, "use_case": use_case, "purpose": "credit-assessment",
-            "requested_scopes": SCOPES,
-        },
+        "request_context": {k: v for k, v in context.items() if v is not None},
         **extra,
     })
 
@@ -90,7 +91,7 @@ def test_lookup_finds_a_portal_consent(call, run, exchange, as_partner, bank, up
     assert set(body["receipts"]) == {FR, CSR}
     logs = [r for r in decision_log(run, consent_id) if r.decision == "permit"]
     assert {r.data_controller for r in logs} == {FR, CSR}
-    assert all(r.policy_ref == f"use_case:{USE_CASE}" and r.policy_id for r in logs)
+    assert all(r.policy_ref == f"template:{TEMPLATE}" and r.policy_id is None for r in logs)
 
 
 def test_lookup_picks_latest_valid_until(call, run, exchange, as_partner, bank, upload):  # noqa: F811
@@ -107,9 +108,9 @@ def test_lookup_picks_latest_valid_until(call, run, exchange, as_partner, bank, 
     assert lookup(call, bank.audience)["consent_id"] == third
 
 
-@pytest.mark.parametrize("case", ["revoked", "expired", "other_use_case", "other_subject",
+@pytest.mark.parametrize("case", ["revoked", "expired", "other_purpose", "other_subject",
                                   "other_partner"])
-def test_lookup_not_found(case, call, run, exchange, as_partner, pm, new_partner, bank,  # noqa: F811
+def test_lookup_not_found(case, call, run, exchange, as_partner, new_partner, bank,  # noqa: F811
                           upload):
     consent_id = portal_consent(call, as_partner, bank, upload)
     ask = {}
@@ -117,29 +118,29 @@ def test_lookup_not_found(case, call, run, exchange, as_partner, pm, new_partner
         set_artefact(run, consent_id, status="revoked")
     elif case == "expired":
         set_artefact(run, consent_id, valid_until=datetime.now(timezone.utc) - timedelta(seconds=1))
-    elif case == "other_use_case":
-        ask["use_case"] = OTHER
+    elif case == "other_purpose":
+        ask["purpose"] = "insurance"
     elif case == "other_subject":
         ask["subject"] = {**SUBJECT, "value": "999999999999"}
     audience = bank.audience
     if case == "other_partner":
         other = new_partner()
-        pm.grant_use_cases(other.audience, [USE_CASE])
+        exchange.offer(other.audience, [TEMPLATE])
         audience = other.audience
     body = lookup(call, audience, **ask)
     assert body["decision"] == "deny" and body["reason_code"] == "consent_not_found", body
     assert body["receipts"] is None and body["consent_id"] is None
 
 
-def test_lookup_only_for_a_presenter_in_use_case_mode(call, exchange, as_partner, bank,  # noqa: F811
-                                                      upload):
+def test_lookup_only_for_a_presenter_in_terms_mode(call, exchange, as_partner, bank,  # noqa: F811
+                                                   upload):
     portal_consent(call, as_partner, bank, upload)
     for body in (
         lookup(call, bank.audience, partner_id=bank.audience),  # not a presenter
-        lookup(call, bank.audience, use_case=None),  # no use case
+        lookup(call, bank.audience, purpose=None),  # no purpose
         lookup(call, None),  # no consent_partner_id
         post(call, {"consent_partner_id": bank.audience, "partner_id": PRESENTER,
-                    "request_context": {"use_case": USE_CASE}}),  # no subject
+                    "request_context": {"purpose": "credit-assessment"}}),  # no subject
     ):
         assert body["decision"] == "deny" and body["reason_code"] == "malformed_object", body
     # Both consent_jws and consent_id: still refused.
@@ -147,24 +148,23 @@ def test_lookup_only_for_a_presenter_in_use_case_mode(call, exchange, as_partner
     assert both["reason_code"] == "malformed_object"
 
 
-def test_partner_signed_consent_is_found_after_first_use(call, cfg, pm, new_partner):
+def test_partner_signed_consent_is_found_after_first_use(call, cfg, new_partner):
     exchange_on(cfg)
     p = new_partner()
-    pm.grant_use_cases(p.audience, [USE_CASE])
     jws = p.sign(p.claims(grants=GRANTS))
     first = post(call, {"consent_jws": jws, "partner_id": PRESENTER, "issue_receipts": True,
-                        "request_context": {"subject_id": SUBJECT, "use_case": USE_CASE,
+                        "request_context": {"subject_id": SUBJECT, "template": TEMPLATE,
                                             "purpose": "credit-assessment",
-                                            "requested_scopes": SCOPES}})
+                                            "requested_scopes": SCOPES,
+                                            "limits": {"allow_partner_consents": True}}})
     assert first["decision"] == "permit", first
     body = lookup(call, p.audience)
     assert body["decision"] == "permit", body
     assert body["grants"] == first["grants"]
     assert set(body["receipts"]) == {FR, CSR}
     assert body["consent_id"]
-    # Stored for that use case only.
-    pm.grant_use_cases(p.audience, [USE_CASE, OTHER])
-    assert lookup(call, p.audience, use_case=OTHER)["reason_code"] == "consent_not_found"
+    # Found for its purpose only.
+    assert lookup(call, p.audience, purpose="insurance")["reason_code"] == "consent_not_found"
 
 
 def test_status_check_is_off_by_default(call, cfg, env, pm):

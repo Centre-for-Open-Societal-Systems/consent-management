@@ -1,5 +1,5 @@
-// Types for the Consent Manager partner-portal API (/consent/v1/partner-portal/*)
-// and the composite's public use-case list. Shapes follow the scenario-1 contract.
+// Types for the Consent Manager partner-portal API (/consent/v1/partner-portal/*).
+// Shapes follow the scenario-1 contract.
 
 export interface Me {
   username: string;
@@ -20,43 +20,41 @@ export interface ScopePolicy {
   policy_version: number;
 }
 
-// What a consent for a use case grants from one registry (data_scopes =
+// What a consent from a template grants from one registry (data_scopes =
 // required + optional).
-export interface UseCaseGrant {
+export interface TemplateGrant {
   data_controller: string;
   data_scopes: string[];
   required_scopes: string[];
   optional_scopes: string[];
 }
 
-// A use case granted to this partner (at the Exchange): one per use-case policy
-// in Partner Management, with that policy's limits, and the use case's purpose
-// and data per registry from the Composite. available=false: no consent can be
-// made for it now (see detail).
-export interface UseCaseAccess {
-  use_case: string; // name@major
+// A consent template offered to this partner (at the Exchange), from the
+// Consent Manager's template source: its purpose, data per registry and
+// limits. available=false: no consent can be made from it now (see detail).
+export interface ConsentTemplate {
+  code: string; // e.g. loan-profile@1
   title?: string | null;
   description?: string | null;
   purpose?: string | null;
-  grants: UseCaseGrant[];
-  subject_id_types: string[];
-  allowed_purposes: string[];
+  grants: TemplateGrant[];
+  // Limits on a consent made from it; empty / null = none.
   allowed_subject_id_types: string[];
   max_validity_duration: string | null;
-  policy_version: number;
-  available: boolean;
+  allow_partner_consents: boolean;
+  available?: boolean;
   detail?: string | null;
 }
 
-// GET /access — what the partner may ask for. consent_by "use_case" (at the
-// Exchange): a request names one of use_cases. "scopes": a request names
+// GET /access — what the partner may ask for. consent_by "template" (at the
+// Exchange): a request names one of the templates. "scopes": a request names
 // registries and data, within scope_policies.
-export type ConsentBy = "use_case" | "scopes";
+export type ConsentBy = "template" | "scopes";
 
 export interface PartnerAccess {
   consent_by: ConsentBy;
   scope_policies: ScopePolicy[];
-  use_cases: UseCaseAccess[];
+  templates: ConsentTemplate[];
 }
 
 export interface SubjectId {
@@ -111,7 +109,8 @@ export interface ConsentRequest {
   id: string;
   status: RequestStatus | string;
   method?: string | null;
-  use_case?: string | null;
+  // The consent template it was made from (a label).
+  template?: string | null;
   subject_id: SubjectId;
   // Other identifiers of the subject, e.g. the Farmer ID.
   subject_identifiers?: SubjectId[];
@@ -179,15 +178,16 @@ export interface SubjectAuthStart {
   expires_at: string;
 }
 
-// With grants: purpose and grants required, use_case a label. At the Exchange
-// (consent_by "use_case"): use_case only — the grants and purpose are the use case's.
+// With grants: purpose and grants required, template a label. At the Exchange
+// (consent_by "template"): template, and optionally grants chosen within its
+// scopes (required ones included) — the purpose is the template's.
 export interface ConsentRequestCreate {
   subject_id: SubjectId;
   subject_identifiers?: SubjectId[];
   purpose?: { code: string };
   grants?: Grant[];
   validity?: { valid_from?: string; valid_until?: string };
-  use_case?: string;
+  template?: string;
 }
 
 export interface Page<T> {
@@ -200,8 +200,9 @@ export const CONSENT_STATUSES: ConsentStatus[] = ["active", "revoked", "expired"
 
 export interface ConsentGrant extends Grant {
   effective_data_scopes: string[];
-  // The Partner Management policy the grant was made under (kind:key, e.g.
-  // "use_case:loan-profile@1"), its version and PM's id of that version.
+  // The policy the grant was made under (kind:key, e.g.
+  // "data_controller:farmer-registry", or "template:loan-profile@1" for a grant
+  // made from a consent template), its version and PM's id of that version.
   policy_version?: number | null;
   policy_id?: string | null;
   policy_ref?: string | null;
@@ -228,27 +229,9 @@ export interface Consent {
   valid_from?: string | null;
   valid_until?: string | null;
   assurance?: Assurance | null;
-  use_case?: string | null;
+  // The consent template it was made from (a label).
+  template?: string | null;
   consent_request_id?: string | null;
   created_at: string;
   revoked_at?: string | null;
-}
-
-// ── Composite: GET {compositeUrl}/composite/v1/use-cases (public) ──────────
-export interface ConsentScopes {
-  required: string[];
-  optional: string[];
-}
-
-export interface UseCase {
-  use_case: string; // ref, e.g. "loan-profile@1"
-  name: string;
-  version: string;
-  status?: string;
-  title?: string;
-  description?: string;
-  purpose?: string;
-  consent?: { required?: boolean };
-  input?: { subject?: { id_types?: string[] } };
-  consent_scopes?: Record<string, ConsentScopes>;
 }

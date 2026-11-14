@@ -15,7 +15,6 @@ import type {
   SubjectAuth,
   SubjectAuthConfig,
   SubjectAuthStart,
-  UseCase,
 } from "./types";
 
 export class ApiError extends Error {
@@ -31,7 +30,7 @@ export class ApiError extends Error {
 function errorMessage(body: unknown, fallback: string): { message: string; reason?: string } {
   const b = body as Record<string, unknown> | undefined;
   // Validation errors: 400 {"errors": [{code, message}]}; FastAPI: {"detail": …};
-  // composite: {"error": {code, message}}.
+  // the CM's own: {"error": "…"} or {"error": {code, message}}.
   const listed = Array.isArray(b?.errors)
     ? (b!.errors as { message?: string }[]).map((e) => e.message).filter(Boolean).join("; ")
     : undefined;
@@ -157,24 +156,3 @@ export const api = {
   // and the CM's signed statement tying them together.
   record: (id: string) => requestBlob(`${P}/consents/${encodeURIComponent(id)}/record`),
 };
-
-// ── Composite (public, no auth) ──────────────────────────────────────
-export function compositeUrl(): string {
-  return (getConfig().compositeUrl ?? "").replace(/\/$/, "");
-}
-
-export async function listUseCases(): Promise<UseCase[]> {
-  const res = await fetch(`${compositeUrl()}/composite/v1/use-cases`);
-  const text = await res.text();
-  let body: unknown;
-  try {
-    body = text ? JSON.parse(text) : undefined;
-  } catch {
-    body = undefined;
-  }
-  if (!res.ok) {
-    const { message, reason } = errorMessage(body, res.statusText || `HTTP ${res.status}`);
-    throw new ApiError(res.status, message, reason);
-  }
-  return ((body as { use_cases?: UseCase[] })?.use_cases ?? []) as UseCase[];
-}

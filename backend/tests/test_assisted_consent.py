@@ -164,7 +164,7 @@ def request_body(**extra):
             {"data_controller": FR, "data_scopes": ["farmer_personal_details"]},
             {"data_controller": CSR, "data_scopes": ["crop_season", "measures"]},
         ],
-        "use_case": "loan-profile@1",
+        "template": "loan-profile@1",
     }
     body.update(extra)
     return body
@@ -232,7 +232,7 @@ def test_me_and_access(portal, as_partner, bank):
                   "roles": ["PARTNER_OPERATOR"]}
     status, access = pc("GET", "/access")
     assert status == 200
-    assert access["consent_by"] == "scopes" and access["use_cases"] == []
+    assert access["consent_by"] == "scopes" and access["templates"] == []
     by = {b["data_controller"]: b for b in access["scope_policies"]}
     assert set(by) == {FR, CSR}
     assert by[FR]["allowed_data_scopes"] == ["farmer_personal_details"]
@@ -255,7 +255,7 @@ def test_create_request(portal, as_partner, bank):
     pc = as_partner(bank.audience, username="op1")
     req = create(pc)
     assert req["status"] == "pending" and req["method"] == "assisted"
-    assert req["use_case"] == "loan-profile@1" and req["created_by"] == "op1"
+    assert req["template"] == "loan-profile@1" and req["created_by"] == "op1"
     assert req["subject_id"] == {"type": "FAYDA_FAN", "value": "123456789012"}
     assert req["grants"] == request_body()["grants"]
     assert req["consent_id"] is None and req["submitted_at"] is None
@@ -431,7 +431,7 @@ def test_staff_approve_creates_consent(call, portal, as_partner, bank, upload, r
     assert mine["status"] == "approved" and mine["consent_id"] == consent_id
     status, consent = pc("GET", f"/consents/{consent_id}")
     assert status == 200, consent
-    assert consent["status"] == "active" and consent["use_case"] == "loan-profile@1"
+    assert consent["status"] == "active" and consent["template"] == "loan-profile@1"
     assert consent["consent_request_id"] == rid
     assurance = consent["assurance"]
     assert assurance["method"] == "assisted" and assurance["evidence"] == ["signed_form"]
@@ -604,7 +604,7 @@ def _claims(receipt):
 
 def test_validate_consent_id_issues_receipts(call, portal, as_partner, bank, upload):
     # A scope-policy consent, made before the exchange role is on (at the
-    # Exchange consents are made by use case).
+    # Exchange consents are made from a consent template).
     pc = as_partner(bank.audience)
     consent_id = approved_consent(call, pc, upload)
     portal.config.receipt_issuer = "agri-stack-exchange-cm"
@@ -666,7 +666,7 @@ def test_migration_added_columns(run):
             ), {"t": table})
             return {r[0] for r in rows}
 
-    assert {"method", "use_case", "created_by", "partner_audience", "submitted_at",
+    assert {"method", "template", "created_by", "partner_audience", "submitted_at",
             "verified_by", "verified_at", "verification_note"} <= run(columns("consent_requests"))
     assert {"assurance", "consent_request_id"} <= run(columns("consent_artefacts"))
     assert {"sha256", "storage_key", "consent_request_id"} <= run(columns("consent_evidence"))

@@ -82,21 +82,42 @@ class ConsentObject(BaseModel):
         return None
 
 
+class CallerLimits(BaseModel):
+    """Caller-terms mode: limits on the consent, sent by the token presenter
+    (e.g. from the partner's grant). Each field optional; absent = no limit,
+    except ``allow_partner_consents`` (absent = false: a partner-signed
+    ``consent_jws`` is refused)."""
+
+    allowed_subject_id_types: Optional[List[str]] = None
+    # ISO 8601 duration, e.g. P1Y: the consent's validity may be no longer.
+    max_validity_duration: Optional[str] = Field(None, max_length=64, examples=["P1Y"])
+    allow_partner_consents: bool = False
+    allowed_signing_algs: Optional[List[str]] = None
+
+
 class RequestContext(BaseModel):
     requested_scopes: Optional[List[str]] = None
     # The subject the caller is about to search for. If it has the same type as
     # the consent's subject, the values must match (else deny subject_mismatch).
     # A different type is resolved by the registry, not CM.
     subject_id: Optional[SubjectId] = None
-    # Use-case mode (exchange role): the use case the caller (a configured
-    # receipt presenter, e.g. the Composite) serves, as `name@major`
-    # (loan-profile@1). The consenting partner's policy for this use case in
-    # Partner Management must exist (else use_case_not_granted); it replaces the
-    # partner's per-registry scope policies. Ignored for any other caller.
-    use_case: Optional[str] = Field(None, max_length=255, examples=["loan-profile@1"])
-    # Use-case mode: the purpose the use case serves; the consent's purpose code
-    # must equal it.
+    # Caller-terms mode (exchange role): a configured token presenter
+    # (receipt_presenters, e.g. the Composite) sends the terms of the request —
+    # the purpose (the consent's purpose code must equal it), requested_scopes
+    # (required: the ceiling per registry) and ``limits``. They replace the
+    # partner's per-registry scope policies. ``purpose`` from any other caller
+    # is ignored.
     purpose: Optional[str] = Field(None, max_length=255, examples=["credit-assessment"])
+    limits: Optional[CallerLimits] = None
+    # Caller-terms mode: the consent template the terms come from, a label
+    # recorded for audit and display (policy_ref "template:<code>"); never
+    # used to decide.
+    template: Optional[str] = Field(None, max_length=255, examples=["loan-profile@1"])
+
+    @property
+    def has_terms(self) -> bool:
+        """Carries terms only a token presenter may send."""
+        return self.limits is not None or bool(self.template)
 
 
 class ValidateRequest(BaseModel):
@@ -105,9 +126,10 @@ class ValidateRequest(BaseModel):
     # the partner's Partner-Management key referenced by the JWS ``kid``.
     # At most one of consent_jws / consent_id. Neither: consent by lookup —
     # the CM finds the consent it holds for request_context.subject_id and, in
-    # use-case mode, consent_partner_id and .use_case; otherwise partner_id and
-    # data_controller. A partner-signed consent is accepted only when the
-    # applicable policy sets allow_partner_consents.
+    # caller-terms mode, consent_partner_id and .purpose; otherwise partner_id
+    # and data_controller. A partner-signed consent is accepted only when the
+    # applicable policy (or, in caller-terms mode, limits) sets
+    # allow_partner_consents.
     consent_jws: Optional[str] = None
     # A stored (originated) consent, by its ID, and the partner that obtained
     # it (its audience, e.g. bank-a) — checked against the consent.
@@ -144,7 +166,8 @@ class DecisionLogResponse(BaseModel):
     detail: Optional[str] = None
     policy_version: Optional[int] = None
     # The PM policy applied: PM's id of that version and its key (kind:key,
-    # e.g. use_case:loan-profile@1 or data_controller:farmer-registry).
+    # e.g. data_controller:farmer-registry). Caller-terms mode: no PM policy;
+    # template:<code> when the presenter named the template.
     policy_id: Optional[str] = None
     policy_ref: Optional[str] = None
     receipt_jti: Optional[str] = None

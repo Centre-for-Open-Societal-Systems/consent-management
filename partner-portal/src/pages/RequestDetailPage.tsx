@@ -120,11 +120,11 @@ export default function RequestDetailPage() {
             ))}
             <dt>Purpose</dt>
             <dd>{purposeLabel(r.purpose)}</dd>
-            {r.use_case && (
+            {r.template && (
               <>
-                <dt>Use case</dt>
+                <dt>Consent template</dt>
                 <dd>
-                  <code className="mono">{r.use_case}</code>
+                  <code className="mono">{r.template}</code>
                 </dd>
               </>
             )}

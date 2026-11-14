@@ -51,7 +51,7 @@ function InProgress() {
               </td>
               <td>
                 {purposeLabel(r.purpose)}
-                {r.use_case && <div className="muted" style={{ fontSize: 12 }}>{r.use_case}</div>}
+                {r.template && <div className="muted" style={{ fontSize: 12 }}>{r.template}</div>}
               </td>
               <td className="muted">{r.created_by ?? "—"}</td>
               <td>
@@ -154,7 +154,7 @@ export default function ConsentsPage() {
                   </td>
                   <td>
                     {purposeLabel(c.purpose)}
-                    {c.use_case && <div className="muted" style={{ fontSize: 12 }}>{c.use_case}</div>}
+                    {c.template && <div className="muted" style={{ fontSize: 12 }}>{c.template}</div>}
                   </td>
                   <td className="muted">{c.grants.map((g) => g.data_controller).join(", ")}</td>
                   <td className="muted">{formatDate(c.valid_until)}</td>

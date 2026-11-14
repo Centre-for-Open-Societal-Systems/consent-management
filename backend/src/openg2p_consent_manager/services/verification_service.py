@@ -24,7 +24,7 @@ from ..utils.canonical import b64url_decode, iso_duration_to_timedelta, sha256_h
 from .exchange_service import TOKEN_TYPS, ExchangeService, to_datetime
 from .partner_service import PartnerService
 from .pm_policy_client import PolicyUnavailable, policy_fields
-from .policy_service import PolicyService
+from .policy_service import CallerTerms, PolicyResult, PolicyService
 from .receipt_service import ReceiptService
 
 _config = Settings.get_config()
@@ -61,6 +61,9 @@ class VerificationService(BaseService):
         return claims, protected_header
 
     async def validate(self, parsed: ValidateRequest) -> Decision:
+        refusal = self._terms_refusal(parsed)
+        if refusal is not None:
+            return await refusal
         if parsed.consent_id:
             return await self._validate_stored(parsed)
         if not parsed.consent_jws:
@@ -136,26 +139,21 @@ class VerificationService(BaseService):
                 now, ctx_hash, jti=obj.jti, data_controller=controller,
             )
 
-        # 2. Known party — the partner's active policy in Partner Management
-        #    (cached): its scope policy for this controller or, in use-case
-        #    mode, its policy for the use case.
-        use_case_mode = self._use_case_mode(parsed)
+        # 2. Known party — the partner's active scope policy for this
+        #    controller in Partner Management (cached) or, in caller-terms
+        #    mode, the terms the presenter sent (no policy read).
+        terms_mode = self._caller_terms_mode(parsed)
         try:
-            material = await self.partners.get_verification_material(
-                obj.aud, controller,
-                use_case=parsed.request_context.use_case if use_case_mode else None,
+            material = (
+                self.partners.terms_material(obj.aud, CallerTerms.from_context(
+                    parsed.request_context))
+                if terms_mode
+                else await self.partners.get_verification_material(obj.aud, controller)
             )
         except PolicyUnavailable:
             return await self._deny(
                 ReasonCode.policy_unavailable,
                 "the partner's policy could not be read from Partner Management",
-                now, ctx_hash, jti=obj.jti, data_controller=controller,
-            )
-        if material is None and use_case_mode:
-            return await self._deny(
-                ReasonCode.use_case_not_granted,
-                f"partner has no active policy for use case "
-                f"'{parsed.request_context.use_case}' in Partner Management",
                 now, ctx_hash, jti=obj.jti, data_controller=controller,
             )
         if material is None:
@@ -169,13 +167,14 @@ class VerificationService(BaseService):
         policy = material["policy"]
 
         # 2b. Partner-signed consents are accepted only when the applicable
-        #     policy allows them (the CM cannot verify the subject agreed; only
-        #     the partner's signature). Consents the CM holds are unaffected.
+        #     policy (or the presenter's limits) allows them (the CM cannot
+        #     verify the subject agreed; only the partner's signature).
+        #     Consents the CM holds are unaffected.
         if not getattr(policy, "allow_partner_consents", False):
             return await self._deny(
                 ReasonCode.partner_consent_not_accepted,
-                "the partner's policy does not accept consents it signed itself "
-                "(allow_partner_consents)",
+                "the partner's policy (or the request's limits) does not accept "
+                "consents it signed itself (allow_partner_consents)",
                 now, ctx_hash, partner_id=partner.audience, jti=obj.jti,
                 data_controller=controller, policy=policy,
             )
@@ -204,13 +203,13 @@ class VerificationService(BaseService):
                 data_controller=controller, policy=policy,
             )
 
-        # 3b. Use-case mode — the policy must be the use case's, and the
-        #     consent given for the purpose it serves. Checked before a stored
-        #     decision is reused: the same consent may be presented for another
-        #     use case.
-        if use_case_mode:
-            refusal = self.policy.check_use_case(
-                policy, parsed.request_context, (obj.purpose or {}).get("code")
+        # 3b. Caller-terms mode — the requested scopes must be sent and the
+        #     consent given for the purpose sent. Checked before a stored
+        #     decision is reused: the same consent may be presented for
+        #     another purpose.
+        if terms_mode:
+            refusal = self.policy.check_caller_terms(
+                parsed.request_context, (obj.purpose or {}).get("code")
             )
             if refusal is not None:
                 return await self._deny(
@@ -270,11 +269,12 @@ class VerificationService(BaseService):
 
         # Permit — mint canonical artefact + signed receipt + decision log for
         # this (consent, controller).
-        # In use-case mode the stored consent records the use case, so a later
-        # request without a consent finds it (consent by lookup).
+        # In caller-terms mode the stored consent keeps the template named (a
+        # label); a later request without a consent finds it by its purpose
+        # (consent by lookup).
         return await self._permit(
             obj, grant, partner, result, now, ctx_hash,
-            use_case=parsed.request_context.use_case if use_case_mode else None,
+            template=parsed.request_context.template if terms_mode else None,
         )
 
     # ── Agri Stack exchange: issuing consent tokens (exchange role) ─────────
@@ -343,8 +343,8 @@ class VerificationService(BaseService):
         """Neither ``consent_jws`` nor ``consent_id``: find a consent the CM
         holds and validate it as a stored consent.
 
-        * Use-case mode (the Composite): by (consent_partner_id, subject,
-          use case).
+        * Caller-terms mode (a token presenter): by (consent_partner_id,
+          subject, purpose).
         * Otherwise (a registry, path A): by (partner_id, subject,
           data_controller).
 
@@ -353,15 +353,14 @@ class VerificationService(BaseService):
         now = datetime.now(timezone.utc)
         ctx = parsed.request_context
         subject = ctx.subject_id if ctx else None
-        if self._use_case_mode(parsed):
+        if self._caller_terms_mode(parsed):
             partner_aud = parsed.consent_partner_id
             if subject is None or not partner_aud:
                 return self._lookup_malformed(now)
-            # Served by the partial index ix_consent_artefacts_lookup. Only
-            # originated and partner-signed consents carry a use case.
-            key = ctx.use_case
-            match = ConsentArtefact.use_case == key
-            what = f"use case '{key}'"
+            # Served by the partial index ix_consent_artefacts_purpose_lookup.
+            key = ctx.purpose
+            match = ConsentArtefact.purpose["code"].astext == key
+            what = f"purpose '{key}'"
             update = {}
         else:
             partner_aud = parsed.partner_id
@@ -371,10 +370,11 @@ class VerificationService(BaseService):
             # Served by the partial index ix_consent_artefacts_controller_lookup
             # (a single-controller consent); an originated consent with several
             # grants has no controller_id and is matched on its grants.
-            # A consent given for a use case is only for that use case (through
-            # the Composite), never for a direct call to the registry.
+            # A consent made from a consent template (exchange role) is
+            # presented through the token presenter, not by a direct call to
+            # the registry.
             match = and_(
-                ConsentArtefact.use_case.is_(None),
+                ConsentArtefact.template.is_(None),
                 or_(
                     ConsentArtefact.controller_id == key,
                     and_(
@@ -438,7 +438,7 @@ class VerificationService(BaseService):
             decision="deny", reason_code=ReasonCode.malformed_object,
             detail="give 'consent_jws' or 'consent_id', or for consent by lookup "
             "request_context.subject_id with either (a configured presenter) "
-            "consent_partner_id and request_context.use_case, or partner_id and "
+            "consent_partner_id and request_context.purpose, or partner_id and "
             "data_controller",
             evaluated_at=now,
         )
@@ -448,7 +448,7 @@ class VerificationService(BaseService):
         it is recorded on. An originated consent holds its grants; a
         partner-signed one is stored per controller (same jti), so its grants
         are the active, valid artefacts of that jti for the same partner and
-        use case."""
+        template."""
         if artefact.source != ArtefactSource.embedded.value:
             return [
                 {**g, "consent_id": artefact.id}
@@ -464,7 +464,7 @@ class VerificationService(BaseService):
                 select(ConsentArtefact).where(
                     ConsentArtefact.object_jti == artefact.object_jti,
                     ConsentArtefact.partner_id == artefact.partner_id,
-                    ConsentArtefact.use_case == artefact.use_case,
+                    ConsentArtefact.template == artefact.template,
                     ConsentArtefact.source == ArtefactSource.embedded.value,
                     ConsentArtefact.status == ArtefactStatus.active.value,
                     ConsentArtefact.valid_until > now,
@@ -571,40 +571,15 @@ class VerificationService(BaseService):
             if parsed.request_context and parsed.request_context.requested_scopes
             else None
         )
-        # Each grant is narrowed to the partner's CURRENT policy in Partner
-        # Management: its scope policy for the controller or, in use-case mode,
-        # its policy for the use case (whose ceiling is the requested scopes).
-        use_case_mode = self._use_case_mode(parsed)
+        # Each grant is narrowed to the partner's CURRENT scope policy for the
+        # controller in Partner Management or, in caller-terms mode, to the
+        # presenter's terms (whose ceiling is the requested scopes).
+        terms_mode = self._caller_terms_mode(parsed)
         granted: dict[str, tuple[list, object, str]] = {}
-        if (
-            use_case_mode
-            and artefact.use_case
-            and artefact.use_case != parsed.request_context.use_case
-        ):
-            # A consent made for a use case (exchange role) serves only it.
-            return await self._deny(
-                ReasonCode.use_case_not_granted,
-                f"the consent was given for use case '{artefact.use_case}', "
-                f"not '{parsed.request_context.use_case}'",
-                now, ctx_hash, data_controller=parsed.data_controller, **log,
-            )
         try:
-            if use_case_mode:
-                use_case = parsed.request_context.use_case
-                material = await self.partners.get_verification_material(
-                    audience, None, use_case=use_case
-                )
-                if material is None:
-                    return await self._deny(
-                        ReasonCode.use_case_not_granted,
-                        f"partner has no active policy for use case '{use_case}' "
-                        "in Partner Management",
-                        now, ctx_hash, data_controller=parsed.data_controller, **log,
-                    )
-                policy = material["policy"]
-                refusal = self._stored_use_case_refusal(
-                    policy, parsed.request_context, artefact
-                )
+            if terms_mode:
+                policy = CallerTerms.from_context(parsed.request_context)
+                refusal = self._stored_terms_refusal(policy, parsed.request_context, artefact)
                 if refusal is not None:
                     return await self._deny(
                         refusal.reason, refusal.detail, now, ctx_hash,
@@ -615,7 +590,7 @@ class VerificationService(BaseService):
                 controller = g.get("data_controller")
                 if not controller:
                     continue
-                if not use_case_mode:
+                if not terms_mode:
                     material = await self.partners.get_verification_material(
                         audience, controller
                     )
@@ -881,47 +856,61 @@ class VerificationService(BaseService):
     # ── helpers ──────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _use_case_mode(parsed: ValidateRequest) -> bool:
-        """Use-case mode: the caller is a configured receipt presenter (the
-        Composite) and names the use case it serves. The consenting partner's
-        policy for that use case then replaces its per-registry scope
-        policies."""
+    def _is_presenter(partner_id: Optional[str]) -> bool:
+        return bool(partner_id and partner_id in (_config.receipt_presenters or []))
+
+    @classmethod
+    def _caller_terms_mode(cls, parsed: ValidateRequest) -> bool:
+        """Caller-terms mode: the caller is a configured token presenter (e.g.
+        the Composite) and sends the purpose of the request. The terms it
+        sends (purpose, requested scopes, limits) then replace the consenting
+        partner's per-registry scope policies."""
         ctx = parsed.request_context
-        return bool(
-            ctx is not None
-            and ctx.use_case
-            and parsed.partner_id
-            and parsed.partner_id in (_config.receipt_presenters or [])
-        )
+        return bool(ctx is not None and ctx.purpose and cls._is_presenter(parsed.partner_id))
 
-    def _stored_use_case_refusal(self, policy, request_context, artefact):
-        """Use-case mode for a stored consent: the checks the policy evaluation
-        applies to a signed consent — the use case's policy and purpose, then the
-        policy's purposes, subject id types and maximum validity."""
-        from .policy_service import PolicyResult
+    def _terms_refusal(self, parsed: ValidateRequest):
+        """A deny (awaitable) when ``request_context`` carries terms the caller
+        may not send: limits or a template from a caller that is not a token
+        presenter, or without the purpose they are for. None otherwise."""
+        ctx = parsed.request_context
+        if ctx is None or not ctx.has_terms:
+            return None
+        now = datetime.now(timezone.utc)
+        ctx_hash = sha256_hex(ctx.model_dump_json().encode("utf-8"))
+        if not self._is_presenter(parsed.partner_id):
+            return self._deny(
+                ReasonCode.caller_terms_not_allowed,
+                "request_context.limits / .template are accepted only from a "
+                "configured token presenter", now, ctx_hash,
+                partner_id=parsed.partner_id, data_controller=parsed.data_controller,
+            )
+        if not ctx.purpose:
+            return self._deny(
+                ReasonCode.malformed_object,
+                "request_context.purpose is required with limits or a template",
+                now, ctx_hash, data_controller=parsed.data_controller,
+            )
+        return None
 
+    def _stored_terms_refusal(self, terms, request_context, artefact):
+        """Caller-terms mode for a stored consent: the checks the policy
+        evaluation applies to a signed consent — requested scopes and purpose,
+        then the limits' subject id types and maximum validity."""
         purpose_code = (artefact.purpose or {}).get("code")
-        refusal = self.policy.check_use_case(policy, request_context, purpose_code)
+        refusal = self.policy.check_caller_terms(request_context, purpose_code)
         if refusal is not None:
             return refusal
-        version = policy.version
-        if policy.allowed_purposes and purpose_code not in policy.allowed_purposes:
-            return PolicyResult(
-                False, ReasonCode.purpose_not_allowed,
-                f"purpose '{purpose_code}' not permitted", policy_version=version,
-            )
         if (
-            policy.allowed_subject_id_types
-            and artefact.subject_id_type not in policy.allowed_subject_id_types
+            terms.allowed_subject_id_types
+            and artefact.subject_id_type not in terms.allowed_subject_id_types
         ):
             return PolicyResult(
                 False, ReasonCode.subject_not_allowed,
                 f"subject_id_type '{artefact.subject_id_type}' not permitted",
-                policy_version=version,
             )
-        if policy.max_validity_duration:
+        if terms.max_validity_duration:
             try:
-                limit = iso_duration_to_timedelta(policy.max_validity_duration)
+                limit = iso_duration_to_timedelta(terms.max_validity_duration)
             except ValueError:
                 limit = None
             if limit is not None and (
@@ -929,7 +918,7 @@ class VerificationService(BaseService):
             ) > limit:
                 return PolicyResult(
                     False, ReasonCode.validity_exceeds_policy,
-                    "validity longer than policy allows", policy_version=version,
+                    "validity longer than the request's limits allow",
                 )
         return None
 
@@ -1013,12 +1002,12 @@ class VerificationService(BaseService):
         source: str = ArtefactSource.embedded.value,
         valid_until: Optional[datetime] = None,
         receipt_jti: Optional[str] = None, receipt_issuer: Optional[str] = None,
-        use_case: Optional[str] = None,
+        template: Optional[str] = None,
     ) -> Decision:
         from ..schemas.common import SubjectId
 
         artefact = ConsentArtefact(
-            use_case=use_case,
+            template=template,
             subject_id_type=obj.subject_id.type,
             subject_id_value=obj.subject_id.value,
             controller_id=grant.data_controller,

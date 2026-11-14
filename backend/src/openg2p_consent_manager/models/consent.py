@@ -70,11 +70,11 @@ class ConsentRequest(BaseORMModelWithId):
 
     # ── Partner portal (consent scenario 1); NULL for other requests ──
     method: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
-    # The use case the request was made for (e.g. loan-profile@1). Exchange
-    # role: the request is made BY use case (its grants and purpose come from
-    # the Composite's use case). Otherwise a display label; the grants are what
-    # is asked for.
-    use_case: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # The consent template the request was made from (its code, e.g.
+    # loan-profile@1), a label. Exchange role: the request is made FROM the
+    # template (its purpose, scopes and limits come from the template source).
+    # Otherwise a display label; the grants are what is asked for.
+    template: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     # The partner user (preferred_username in the partner realm) and partner.
     created_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     partner_audience: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
@@ -163,16 +163,16 @@ class ConsentArtefact(BaseORMModelWithId):
     __tablename__ = "consent_artefacts"
     __table_args__ = (
         UniqueConstraint("object_jti", "controller_id", name="uq_artefact_jti_controller"),
-        # Consent by lookup (/validate, use-case mode): active consents by
-        # (partner, subject, use case), latest valid_until first. Also created
-        # by migrate for existing databases.
+        # Consent by lookup (/validate, caller-terms mode): active consents by
+        # (partner, subject, purpose code), latest valid_until first. Also
+        # created by migrate for existing databases.
         Index(
-            "ix_consent_artefacts_lookup",
-            "partner_id", "subject_id_type", "subject_id_value", "use_case",
-            text("valid_until DESC"),
+            "ix_consent_artefacts_purpose_lookup",
+            "partner_id", "subject_id_type", "subject_id_value",
+            text("(purpose ->> 'code')"), text("valid_until DESC"),
             postgresql_where=text("status = 'active'"),
         ),
-        # Consent by lookup at a registry (no use case): active consents by
+        # Consent by lookup at a registry: active consents by
         # (partner, subject, data controller), latest valid_until first.
         Index(
             "ix_consent_artefacts_controller_lookup",
@@ -208,7 +208,8 @@ class ConsentArtefact(BaseORMModelWithId):
     # Version of the partner's policy in Partner Management the decision used.
     policy_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # The PM policy applied: PM's id of that version, and its key as
-    # kind:key ("use_case:loan-profile@1" / "data_controller:farmer-registry").
+    # kind:key ("data_controller:farmer-registry"; "template:loan-profile@1"
+    # for terms sent by a token presenter).
     policy_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     policy_ref: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
     auth_context_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -228,9 +229,10 @@ class ConsentArtefact(BaseORMModelWithId):
     assurance: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     # The consent request it was originated from (NULL for embedded/receipt).
     consent_request_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
-    # Exchange role: the use case (name@major) the consent was made for. It is
-    # presentable only for that use case. NULL for every other consent.
-    use_case: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Exchange role: the consent template (its code) the consent was made
+    # from, a label for display and audit; the purpose and grants are what
+    # the consent is for. NULL for every other consent.
+    template: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     status: Mapped[str] = mapped_column(String(20), default=ArtefactStatus.active.value, index=True)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

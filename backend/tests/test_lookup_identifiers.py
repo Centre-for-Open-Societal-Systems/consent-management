@@ -10,16 +10,16 @@ from test_assisted_consent import (  # noqa: F401 (fixtures)
     realm_key,
     upload,
 )
-from test_consent_lookup import lookup as uc_lookup
+from test_consent_lookup import lookup as terms_lookup
 from test_consent_lookup import portal_consent, set_artefact
 from test_exchange import cfg, post  # noqa: F401 (fixture)
 from test_grants import CSR, FR
 from test_registry_lookup import lookup, originate, partner  # noqa: F401 (fixture)
-from test_use_case_consent import (  # noqa: F401 (fixtures)
+from test_template_consent import (  # noqa: F401 (fixtures)
     SUBJECT,
     bank,
-    composite,
     exchange,
+    templates,
 )
 
 FARMER = {"type": "FARMER_ID", "value": "FR-0007"}
@@ -49,13 +49,13 @@ def test_registry_lookup_by_another_identifier_not_found(subject, call, partner,
     assert body["decision"] == "deny" and body["reason_code"] == "consent_not_found", body
 
 
-def test_use_case_lookup_by_another_identifier(call, run, exchange, as_partner, bank,  # noqa: F811
+def test_terms_lookup_by_another_identifier(call, run, exchange, as_partner, bank,  # noqa: F811
                                                upload):
     consent_id = portal_consent(call, as_partner, bank, upload)
     set_artefact(run, consent_id, subject_identifiers=[FARMER])
-    body = uc_lookup(call, bank.audience, subject=FARMER)
+    body = terms_lookup(call, bank.audience, subject=FARMER)
     assert body["decision"] == "permit" and body["consent_id"] == consent_id, body
-    body = uc_lookup(call, bank.audience, subject={**FARMER, "value": "FR-0008"})
+    body = terms_lookup(call, bank.audience, subject={**FARMER, "value": "FR-0008"})
     assert body["reason_code"] == "consent_not_found", body
 
 

@@ -15,9 +15,9 @@ from test_assisted_consent import (  # noqa: F401 (fixtures)
     request_body,
 )
 from test_exchange import cfg  # noqa: F401 (fixture)
-from test_use_case_consent import composite, exchange  # noqa: F401 (fixtures)
-from test_use_case_consent import bank as exchange_bank  # noqa: F401
-from test_use_case_consent import create as create_by_use_case
+from test_template_consent import exchange, templates  # noqa: F401 (fixtures)
+from test_template_consent import bank as exchange_bank  # noqa: F401
+from test_template_consent import create as create_from_template
 
 MDS_URL = "http://mds.test"
 TOKEN_URL = "http://keycloak.test/realms/staff/protocol/openid-connect/token"
@@ -145,13 +145,13 @@ def test_not_configured_is_free_text(portal, as_partner, bank):  # noqa: F811
     assert settings["purposes"] is None and settings["subject_id_types"] is None
 
 
-def test_exchange_checks_id_type_not_use_case_purpose(  # noqa: F811
+def test_exchange_checks_id_type_not_template_purpose(  # noqa: F811
     exchange, mds, as_partner, exchange_bank,  # noqa: F811
 ):
     mds.lists["CONSENT_PURPOSE"] = [{"value_code": "something-else", "status": "ACTIVE"}]
     pc = as_partner(exchange_bank.audience)
-    # The use case's purpose (credit-assessment) is the Composite's: not checked.
-    status, body = create_by_use_case(pc)
+    # The template's purpose (credit-assessment) is the template source's: not checked.
+    status, body = create_from_template(pc)
     assert status == 201, body
-    status, body = create_by_use_case(pc, subject_id={"type": "PASSPORT", "value": "P1"})
+    status, body = create_from_template(pc, subject_id={"type": "PASSPORT", "value": "P1"})
     assert status == 400 and "unknown subject ID type 'PASSPORT'" in body["error"]

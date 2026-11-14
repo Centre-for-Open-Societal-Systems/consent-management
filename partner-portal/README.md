@@ -4,18 +4,19 @@ Web app for **partner users** (employees of a partner such as a bank) to obtain 
 in person (consent scenario 1, "assisted") and use it:
 
 - **Consents** (home) — **New consent** raises a consent request for a subject (at the Exchange:
-  one of the partner's use cases; elsewhere: purpose and data per registry), with the subject's
+  one of the consent templates offered to the partner; elsewhere: purpose and data per registry),
+  with the subject's
   national-ID login and the signed consent form, submitted for verification by Consent Manager
   staff. Requests not yet decided are listed first ("In progress"), then the partner's consents:
   data granted per registry, validity, assurance, the signed receipt and the consent record.
-- **Use cases** (`/use-cases`) — read-only: at the Exchange, the use cases approved for the partner,
-  with their purpose and data per registry; elsewhere titled **Data access**, the partner's active
-  data-share policies per registry.
+- **Consent templates** (`/templates`) — read-only: at the Exchange, the consent templates offered
+  to the partner, with their purpose, data per registry (required / optional) and limits; elsewhere
+  titled **Data access**, the partner's active data-share policies per registry.
 - **History** (`/history`) — every request the partner raised and what became of it (approved with
   its consent, rejected with the reason, cancelled).
 
-It is a front end over the Consent Manager partner-portal API (`/consent/v1/partner-portal/*`) and,
-optionally, the composite's public `GET /composite/v1/use-cases`. Same stack and look as the CM
+It is a front end over the Consent Manager partner-portal API (`/consent/v1/partner-portal/*`)
+only. Same stack and look as the CM
 console in `../ui`: React + Vite + TypeScript, keycloak-js, TanStack Query, plain CSS on the OpenG2P
 theme.
 
@@ -34,7 +35,6 @@ environment; in Kubernetes mount it from a ConfigMap over `/usr/share/nginx/html
 ```json
 {
   "apiBaseUrl": "",
-  "compositeUrl": "https://composite.example.org",
   "keycloak": {
     "url": "https://keycloak.example.org",
     "realm": "partner",
@@ -46,7 +46,6 @@ environment; in Kubernetes mount it from a ConfigMap over `/usr/share/nginx/html
 | Key | Meaning |
 | --- | --- |
 | `apiBaseUrl` | Consent Manager API origin. Empty: same origin as the portal (Istio routes `/consent/` to the API). |
-| `compositeUrl` | Optional use-case composite origin, read for a request prefilled from a use case outside the Exchange. Called from the browser, so the composite must allow the portal's origin (CORS). |
 | `keycloak.url` | Keycloak base URL. Empty: **dev mode** — no sign-in; an unsigned token with `partner_id` `dev-partner` is sent (accepted only by a backend without partner-realm verification). |
 | `keycloak.realm` | `partner` |
 | `keycloak.clientId` | `consent-partner-portal` |
@@ -62,7 +61,7 @@ npm run build                                  # type-check + production build i
 npm run lint
 ```
 
-Edit `public/config.json` for local Keycloak / composite URLs.
+Edit `public/config.json` for local Keycloak URLs.
 
 ## Docker
 

@@ -13,10 +13,10 @@ class ConsentRequestCreate(BaseModel):
     (one controller) or ``grants`` (several controllers). Each is checked
     against the partner's policy for that controller in Partner Management.
 
-    Exchange role: ``use_case`` (``name@major``) instead — the request is made
-    for that use case, for which the partner must have a policy in Partner
-    Management; the grants and purpose are the Composite's use case
-    (``purpose``, if given, must be the use case's)."""
+    Exchange role: ``template`` (a consent template's code) instead — the
+    request is made from that template, offered to the partner by the
+    template source: its purpose (``purpose``, if given, must be it), its
+    scopes (``grants``, if given, chosen within them) and its limits."""
 
     subject_id: SubjectId
     partner_id: str = Field(..., min_length=1, examples=["bank-a"])
@@ -25,20 +25,18 @@ class ConsentRequestCreate(BaseModel):
     requested_scopes: Optional[List[str]] = Field(None, min_length=1)
     grants: Optional[List[ConsentGrant]] = Field(None, min_length=1)
     validity: Optional[Dict[str, datetime]] = None  # {valid_from, valid_until}
-    use_case: Optional[str] = Field(None, max_length=255, examples=["loan-profile@1"])
+    template: Optional[str] = Field(None, max_length=255, examples=["loan-profile@1"])
 
     @model_validator(mode="after")
     def _one_shape(self):
-        if self.use_case is not None:
-            if (
-                self.grants is not None
-                or self.requested_scopes is not None
-                or self.data_controller is not None
-            ):
+        if self.template is not None:
+            if self.requested_scopes is not None or self.data_controller is not None:
                 raise ValueError(
-                    "at the Exchange, consents are made for a use case: leave out "
-                    "'grants', 'data_controller' and 'requested_scopes'"
+                    "a consent from a template takes its scopes from the template: "
+                    "leave out 'data_controller' and 'requested_scopes' (choose "
+                    "scopes with 'grants')"
                 )
+            self._check_grants()
             return self
         if self.purpose is None:
             raise ValueError("'purpose' is required")
@@ -48,13 +46,16 @@ class ConsentRequestCreate(BaseModel):
             raise ValueError("'requested_scopes' needs 'data_controller'")
         if self.grants is not None and self.data_controller is not None:
             raise ValueError("'data_controller' goes in each grant, not beside 'grants'")
+        self._check_grants()
+        return self
+
+    def _check_grants(self) -> None:
         if self.grants is not None:
             controllers = [g.data_controller for g in self.grants]
             if len(controllers) != len(set(controllers)):
                 raise ValueError("'grants' names the same data_controller more than once")
             if any(not g.data_scopes for g in self.grants):
                 raise ValueError("each grant needs at least one data scope")
-        return self
 
 
 class ConsentRequestResponse(BaseModel):
@@ -68,7 +69,7 @@ class ConsentRequestResponse(BaseModel):
     purpose: Dict[str, Any]
     requested_scopes: List[str]
     grants: Optional[List[Dict[str, Any]]] = None
-    use_case: Optional[str] = None
+    template: Optional[str] = None
     status: str
     valid_from: Optional[datetime] = None
     valid_until: Optional[datetime] = None
@@ -118,8 +119,8 @@ class ArtefactResponse(BaseModel):
     # How the subject confirmed (originated consents), and its request.
     assurance: Optional[Dict[str, Any]] = None
     consent_request_id: Optional[str] = None
-    # Exchange role: the use case the consent was made for (presentable only for it).
-    use_case: Optional[str] = None
+    # Exchange role: the consent template it was made from (a label).
+    template: Optional[str] = None
     # The PM policy the consent was made under (all grants' when they share
     # one): version, PM's id of that version and its kind:key.
     policy_version: Optional[int] = None

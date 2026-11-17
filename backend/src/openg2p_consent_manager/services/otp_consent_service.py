@@ -33,7 +33,7 @@ from ..models import (
 )
 from .assisted_service import AssistedConsentService
 from .lifecycle_service import LifecycleError
-from .otp_service import OtpError, OtpService
+from .otp_service import UNCERTAIN_DELIVERY, OtpError, OtpService
 from .partner_service import PartnerService
 from .policy_service import PolicyService
 from .receipt_service import ReceiptService
@@ -132,6 +132,9 @@ class OtpConsentService(BaseService):
             try:
                 await self.otp.issue(req, req.subject_id_value)
             except OtpError as exc:
+                if exc.reason == UNCERTAIN_DELIVERY:
+                    # The code may still arrive: keep it valid and keep the send counted.
+                    await session.commit()
                 raise LifecycleError(exc.status, exc.reason) from exc
             await session.commit()
             await session.refresh(req)

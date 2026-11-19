@@ -35,7 +35,6 @@ export default function VerificationDetailPage() {
 
   const [confirm, setConfirm] = useState<"approve" | "reject" | null>(null);
   const [note, setNote] = useState("");
-  const [idsChecked, setIdsChecked] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
 
   const refresh = () => {
@@ -45,7 +44,7 @@ export default function VerificationDetailPage() {
   const decide = useMutation({
     mutationFn: (action: "approve" | "reject") =>
       action === "approve"
-        ? api.approveVerification(id, note.trim() || undefined, idsChecked)
+        ? api.approveVerification(id, note.trim() || undefined)
         : api.rejectVerification(id, note.trim()),
     onSuccess: () => {
       setConfirm(null);
@@ -96,7 +95,7 @@ export default function VerificationDetailPage() {
     <div>
       <div className="spread">
         <div>
-          <h1 style={{ margin: 0 }}>Consent verification</h1>
+          <h1 style={{ margin: 0 }}>Consent approval</h1>
           <div className="muted">
             <code className="mono">{r.id}</code>
           </div>
@@ -115,7 +114,10 @@ export default function VerificationDetailPage() {
           {r.consent_id && (
             <>
               {" "}
-              · consent <code className="mono">{r.consent_id}</code>
+              · consent{" "}
+              <Link to={`/consents/${r.consent_id}`}>
+                <code className="mono">{r.consent_id}</code>
+              </Link>
             </>
           )}
           {r.verification_note && <> · {r.verification_note}</>}
@@ -151,7 +153,7 @@ export default function VerificationDetailPage() {
                 <td>
                   {i.value}
                   <div className="muted" style={{ fontSize: 12 }}>
-                    Entered by the partner. Check it in the registry before approving.
+                    Entered by the partner. The registries return only the subject's own records, whatever ID the partner searches by.
                   </div>
                 </td>
               </tr>
@@ -160,11 +162,11 @@ export default function VerificationDetailPage() {
               <th>Purpose</th>
               <td>{purposeText(r.purpose)}</td>
             </tr>
-            {r.use_case && (
+            {r.template && (
               <tr>
-                <th>Use case</th>
+                <th>Consent template</th>
                 <td>
-                  <code className="mono">{r.use_case}</code>
+                  <code className="mono">{r.template}</code>
                 </td>
               </tr>
             )}
@@ -337,20 +339,6 @@ export default function VerificationDetailPage() {
                   }
                 />
               </div>
-              {confirm === "approve" && (r.subject_identifiers ?? []).length > 0 && (
-                <label className="row" style={{ gap: 8, marginBottom: 12, alignItems: "flex-start" }}>
-                  <input
-                    type="checkbox"
-                    checked={idsChecked}
-                    onChange={(e) => setIdsChecked(e.target.checked)}
-                    style={{ marginTop: 3 }}
-                  />
-                  <span>
-                    I checked {(r.subject_identifiers ?? []).map((i) => `${i.type} ${i.value}`).join(", ")} in the
-                    registry: it belongs to the subject ({r.subject_id?.type} {r.subject_id?.value}).
-                  </span>
-                </label>
-              )}
               <div className={confirm === "approve" ? "notice notice-pending" : "notice notice-error"}>
                 {confirm === "approve"
                   ? "Approve this request? The consent becomes active and the partner can use it."
@@ -375,8 +363,7 @@ export default function VerificationDetailPage() {
                   onClick={() => decide.mutate(confirm)}
                   disabled={
                     decide.isPending ||
-                    rejectNeedsNote ||
-                    (confirm === "approve" && (r.subject_identifiers ?? []).length > 0 && !idsChecked)
+                    rejectNeedsNote
                   }
                 >
                   {decide.isPending

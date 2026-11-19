@@ -31,7 +31,7 @@ def request_fields(req, consent_id: Optional[str] = None, subject_auth: Optional
         "id": req.id,
         "status": req.status,
         "method": req.method,
-        "use_case": req.use_case,
+        "template": req.template,
         "subject_id": SubjectId(type=req.subject_id_type, value=req.subject_id_value),
         "subject_identifiers": [SubjectId(**i) for i in (req.subject_identifiers or [])],
         "purpose": req.purpose or {},
@@ -49,21 +49,6 @@ def request_fields(req, consent_id: Optional[str] = None, subject_auth: Optional
         "verification_note": req.verification_note,
         "consent_id": consent_id,
         "subject_authentication": subject_auth,
-        **otp_fields(req),
-    }
-
-
-def otp_fields(req) -> dict:
-    """Code state of a method "otp" request; nothing for other requests."""
-    if getattr(req, "method", None) != "otp":
-        return {}
-    from ..config import Settings
-
-    attempts = getattr(req, "otp_attempts", None) or 0
-    return {
-        "otp_channel": req.otp_channel,
-        "otp_expires_at": req.otp_expires_at,
-        "otp_attempts_left": max(0, Settings.get_config().otp_max_attempts - attempts),
     }
 
 
@@ -71,13 +56,16 @@ def evidence_list(rows) -> list:
     return [EvidenceResponse.model_validate(e) for e in rows]
 
 
-def consent_view(artefact, use_cases: dict) -> PartnerConsentResponse:
+def consent_view(artefact, templates: dict) -> PartnerConsentResponse:
     if artefact.grants:
         grants = [
             ConsentGrantView(
                 data_controller=g.get("data_controller"),
                 data_scopes=g.get("data_scopes") or [],
                 effective_data_scopes=g.get("effective_data_scopes") or [],
+                policy_version=g.get("policy_version"),
+                policy_id=g.get("policy_id"),
+                policy_ref=g.get("policy_ref"),
             )
             for g in artefact.grants
         ]
@@ -87,6 +75,9 @@ def consent_view(artefact, use_cases: dict) -> PartnerConsentResponse:
                 data_controller=artefact.controller_id,
                 data_scopes=artefact.data_scopes or [],
                 effective_data_scopes=artefact.effective_data_scopes or [],
+                policy_version=artefact.policy_version,
+                policy_id=artefact.policy_id,
+                policy_ref=artefact.policy_ref,
             )
         ]
     return PartnerConsentResponse(
@@ -99,7 +90,7 @@ def consent_view(artefact, use_cases: dict) -> PartnerConsentResponse:
         valid_from=artefact.valid_from,
         valid_until=artefact.valid_until,
         assurance=artefact.assurance,
-        use_case=use_cases.get(artefact.consent_request_id),
+        template=artefact.template or templates.get(artefact.consent_request_id),
         consent_request_id=artefact.consent_request_id,
         created_at=artefact.created_at,
         revoked_at=artefact.revoked_at,

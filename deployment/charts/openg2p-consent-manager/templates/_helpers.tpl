@@ -61,13 +61,19 @@ trial.openg2p.org. Root context.
 - name: CONSENT_MANAGER_RECEIPT_PRESENTERS
   value: {{ toJson $presenters | quote }}
 - name: CONSENT_MANAGER_RECEIPT_TTL_SECONDS
-  value: {{ $x.receiptTtlSeconds | default 900 | quote }}
+  value: {{ $x.receiptTtlSeconds | default 300 | quote }}
+{{- end }}
+{{- $templates := tpl ($x.consentTemplateSourceUrl | default "") . -}}
+{{- if and (not $templates) (eq $role "exchange") }}{{ $templates = $x.defaultConsentTemplateSourceUrl }}{{ end -}}
+{{- if $templates }}
+- name: CONSENT_MANAGER_CONSENT_TEMPLATE_SOURCE_URL
+  value: {{ $templates | quote }}
 {{- end }}
 {{- if $issuers }}
 - name: CONSENT_MANAGER_TRUSTED_RECEIPT_ISSUERS
   value: {{ toJson $issuers | quote }}
 - name: CONSENT_MANAGER_RECEIPT_STATUS_CHECK
-  value: {{ $x.receiptStatusCheck | default "always" | quote }}
+  value: {{ $x.receiptStatusCheck | default "never" | quote }}
 {{- end }}
 {{- end -}}
 
@@ -110,6 +116,15 @@ install's manifests are unchanged. Call with the root context.
   value: {{ $sa.idTypes | toJson | quote }}
 - name: CONSENT_MANAGER_SUBJECT_AUTH_PRIVATE_KEY_PATH
   value: {{ printf "%s/client.pem" $sa.keyMountPath | quote }}
+{{- $ac := $p.assistedConfirmation | default dict }}
+{{- if $ac.enabled }}
+- name: CONSENT_MANAGER_ASSISTED_CONFIRMATION_ENABLED
+  value: "true"
+- name: CONSENT_MANAGER_ASSISTED_CONFIRMATION_VALIDITY_DAYS
+  value: {{ $ac.validityDays | default 30 | int | toString | quote }}
+- name: CONSENT_MANAGER_ASSISTED_CONFIRMATION_LOGIN_MAX_AGE_SECONDS
+  value: {{ $ac.loginMaxAgeSeconds | default 600 | int | toString | quote }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- if or $e.enabled $p.enabled }}
@@ -135,6 +150,35 @@ install's manifests are unchanged. Call with the root context.
 {{- end -}}
 
 {{/*
+Master Data code lists (partner portal purposes and subject ID types) for the
+STAFF api, which serves the partner portal API. Root context.
+*/}}
+{{- define "consentManager.masterDataEnv" -}}
+{{- $m := .Values.masterData | default dict -}}
+- name: CONSENT_MANAGER_MDS_URL
+  value: {{ tpl ($m.url | default "") . | quote }}
+- name: CONSENT_MANAGER_MDS_TOKEN_URL
+  value: "{{ tpl .Values.global.keycloakIssuerUrl . }}/protocol/openid-connect/token"
+- name: CONSENT_MANAGER_MDS_CLIENT_ID
+  value: {{ tpl .Values.global.consentManagerAuthClientId . | quote }}
+# Its secret: the keycloak-init Secret of the same name.
+- name: CONSENT_MANAGER_MDS_CLIENT_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ tpl .Values.global.consentManagerAuthClientId . | quote }}
+      key: client_secret
+      optional: true
+- name: CONSENT_MANAGER_MDS_PURPOSE_LIST_CODE
+  value: {{ $m.purposeListCode | default "" | quote }}
+- name: CONSENT_MANAGER_MDS_SUBJECT_ID_TYPE_LIST_CODE
+  value: {{ $m.subjectIdTypeListCode | default "" | quote }}
+- name: CONSENT_MANAGER_MDS_CACHE_TTL
+  value: {{ $m.cacheTtl | default 300 | quote }}
+- name: CONSENT_MANAGER_MDS_TIMEOUT
+  value: {{ $m.timeout | default 5 | quote }}
+{{- end -}}
+
+{{/*
 true when the staff api mounts the subject-auth client key (partner portal +
 national-ID login on; always on for the exchange role). Root context.
 */}}
@@ -142,6 +186,21 @@ national-ID login on; always on for the exchange role). Root context.
 {{- $p := .Values.partnerPortal | default dict -}}
 {{- $exchange := eq (include "consentManager.exchangeRole" .) "exchange" -}}
 {{- if and $p.enabled (or ($p.subjectAuth | default dict).enabled $exchange) }}true{{ end -}}
+{{- end -}}
+
+{{/*
+Consent receipt withdrawal (root context): the method text, and the
+beneficiary api's base URL when that extra api is enabled.
+*/}}
+{{- define "consentManager.receiptWithdrawalEnv" -}}
+- name: CONSENT_MANAGER_RECEIPT_WITHDRAWAL_METHOD
+  value: {{ .Values.global.consentReceiptWithdrawalMethod | default "" | quote }}
+{{- range .Values.extraApis }}
+{{- if and .enabled (eq (toString .apiAudience) "beneficiary") }}
+- name: CONSENT_MANAGER_RECEIPT_WITHDRAWAL_SUBJECT_API_URL
+  value: {{ printf "https://%s%s" (tpl (toString .hostname) $) (.openapiRootPath | default "") | quote }}
+{{- end }}
+{{- end }}
 {{- end -}}
 
 {{- define "consentManagerApi.envVars" -}}
@@ -175,8 +234,9 @@ dedicated partner_manager client is configured.
 {{- end -}}
 
 {{/*
-Partner Management seed env — shared by the pm-seed Job (deploy-time seeding)
-and the sanity Job (its idempotent safety-net check). The signing private key
+Partner Management seed env — shared by the pm-seed Job (deploy-time seeding
+of the sanity partner, its key and its policy) and the sanity Job (its
+idempotent safety-net check). The signing private key
 is bundled in the sanity image (TEST only); PM stores the derived public half.
 */}}
 {{- define "consentManagerSanity.pmSeedEnv" -}}
@@ -186,6 +246,9 @@ is bundled in the sanity image (TEST only); PM stores the derived public half.
   value: {{ tpl .Values.global.partnerManagementApiUrl $ | quote }}
 - name: SANITY_PM_ADMIN_URL
   value: {{ tpl .Values.global.partnerManagementAdminApiUrl $ | quote }}
+# The sanity partner's PM policy is for this data controller.
+- name: SANITY_CONTROLLER_ID
+  value: {{ .Values.sanity.controllerId | quote }}
 # Authenticate to PM's admin API AS PM's own admin client (holds partner_manager).
 - name: SANITY_PM_ADMIN_TOKEN_URL
   value: "{{ tpl .Values.global.keycloakIssuerUrl $ }}/protocol/openid-connect/token"
@@ -199,26 +262,3 @@ is bundled in the sanity image (TEST only); PM stores the derived public half.
       optional: true
 {{- end -}}
 
-{{/*
-URL AWE posts policy-change decisions to (root context). global.aweCallbackUrl
-if set; else the STAFF api's in-cluster Service — named exactly as
-templates/api/service.yaml names it, so it follows consentManagerApi.nameOverride
-(e.g. `cm-api` under commons-services).
-*/}}
-{{- define "consentManager.aweCallbackUrl" -}}
-{{- if .Values.global.aweCallbackUrl -}}
-{{- tpl .Values.global.aweCallbackUrl . -}}
-{{- else -}}
-{{- $staff := dict "Values" (merge (deepCopy .Values.consentManagerApi) (dict "global" .Values.global)) "Chart" .Chart "Release" .Release -}}
-{{- $port := int (default 80 .Values.consentManagerApi.service.port) -}}
-http://{{ include "common.names.fullname" $staff }}{{ if ne $port 80 }}:{{ $port }}{{ end }}/consent/v1/awe/webhooks/decision
-{{- end -}}
-{{- end -}}
-
-{{/*
-Whether a hook-annotations map still marks a Helm hook (an umbrella chart may
-null the keys out to run the resource as a plain one). Returns "true" or "".
-*/}}
-{{- define "consentManager.isHook" -}}
-{{- if and . (index . "helm.sh/hook") -}}true{{- end -}}
-{{- end -}}

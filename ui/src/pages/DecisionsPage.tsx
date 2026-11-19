@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { api } from "../api/client";
+import { PolicyRef } from "../components/PolicyRef";
 
 // Operational/audit status view: the append-only log of recent validate
 // decisions (permit/deny + reason). Backed by CM's in-house DecisionLog.
@@ -15,7 +17,7 @@ export default function DecisionsPage() {
   return (
     <div>
       <div className="spread">
-        <h1>Decisions</h1>
+        <h1>Access Log</h1>
         <select value={filter} onChange={(e) => setFilter(e.target.value as typeof filter)}>
           <option value="">All</option>
           <option value="permit">Permits</option>
@@ -24,12 +26,12 @@ export default function DecisionsPage() {
       </div>
 
       <p className="muted" style={{ marginTop: -8, marginBottom: 24 }}>
-        The append-only record of every validation decision — for operational visibility and audit.
+        Every consent check the CM made, and its result
       </p>
 
       {isLoading && <div className="loading">Loading…</div>}
-      {error && <div className="notice notice-error">Could not load decisions.</div>}
-      {data && data.length === 0 && <div className="card">No decisions recorded yet.</div>}
+      {error && <div className="notice notice-error">Could not load the access log.</div>}
+      {data && data.length === 0 && <div className="card">No consent checks recorded yet.</div>}
 
       {data && data.length > 0 && (
         <table className="data">
@@ -40,6 +42,7 @@ export default function DecisionsPage() {
               <th>Reason</th>
               <th>Partner</th>
               <th>Controller</th>
+              <th>Consent</th>
               <th>Policy</th>
             </tr>
           </thead>
@@ -55,12 +58,28 @@ export default function DecisionsPage() {
                   {d.detail && <div className="muted" style={{ fontSize: 12 }}>{d.detail}</div>}
                 </td>
                 <td className="muted">
-                  {d.partner_id ? <code className="mono">{d.partner_id.slice(0, 8)}…</code> : "—"}
+                  {d.partner_id ? <code className="mono">{d.partner_id}</code> : "—"}
                 </td>
                 <td className="muted">
                   {d.data_controller ? <code className="mono">{d.data_controller}</code> : "—"}
                 </td>
-                <td className="muted">{d.policy_version != null ? `v${d.policy_version}` : "—"}</td>
+                <td className="muted">
+                  {d.consent_id ? (
+                    <Link to={`/consents/${d.consent_id}`} title={d.consent_id}>
+                      <code className="mono">{d.consent_id.slice(0, 8)}…</code>
+                    </Link>
+                  ) : (
+                    "—"
+                  )}
+                </td>
+                <td className="muted">
+                  <PolicyRef
+                    partnerId={d.partner_id}
+                    policyRef={d.policy_ref}
+                    policyVersion={d.policy_version}
+                    policyId={d.policy_id}
+                  />
+                </td>
               </tr>
             ))}
           </tbody>

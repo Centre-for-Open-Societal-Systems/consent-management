@@ -19,6 +19,7 @@ class DecisionLog(BaseORMModelWithId):
         Index("ix_decision_logs_consent", "consent_id"),
     )
 
+    # The partner (its audience, e.g. bank-a) when known.
     partner_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     consent_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     object_jti: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -27,7 +28,13 @@ class DecisionLog(BaseORMModelWithId):
     decision: Mapped[str] = mapped_column(String(10))  # permit | deny
     reason_code: Mapped[str] = mapped_column(String(40))
     detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Version of the partner's policy in Partner Management that was applied.
     policy_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # The PM policy applied: PM's id of that version, and its key as
+    # kind:key ("data_controller:farmer-registry"; "template:loan-profile@1"
+    # when a token presenter sent the terms, with no PM policy read).
+    policy_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    policy_ref: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
     # Hash of the request context — proves what was evaluated without storing PII.
     request_ctx_hash: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     # Department role: the exchange consent token this decision was made on.

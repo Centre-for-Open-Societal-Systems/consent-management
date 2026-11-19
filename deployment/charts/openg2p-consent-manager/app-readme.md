@@ -3,8 +3,9 @@
 The **Consent Manager** is the Policy Decision Point (PDP) for outbound data sharing in OpenG2P.
 A single instance is shared across all data-holding modules (registry, PBMS, …): a partner embeds
 a signed consent object in its request, the module forwards it to the Consent Manager, and the
-service verifies the signature against the partner's onboarded keys, evaluates it against the
-partner's policy, and returns the exact set of fields that may be released.
+service verifies the signature against the partner's keys, evaluates it against the partner's
+policy, and returns the exact set of fields that may be released. Partners, their keys and their
+policies are managed in Partner Management; the Consent Manager reads them from there.
 
 This chart deploys the API (horizontally autoscaled, stateless), provisions its PostgreSQL
 database, optionally provisions its Keycloak client and admin role, and runs a periodic

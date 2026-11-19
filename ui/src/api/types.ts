@@ -1,116 +1,10 @@
 // Types mirroring the Consent Manager backend schemas (/consent/v1/*).
 // Kept intentionally close to the Pydantic models so the client stays honest.
 
-export type PartnerStatus = "active" | "suspended";
-
-// A "partner" in CM is a POLICY BINDING: it binds a Partner-Management partner
-// (partner_mgmt_id) to a controller + data-share policy. Identity/keys live in
-// PM; `name` here is just a display label. One partner (audience) may have
-// several bindings — one per controller, each with its own policy.
-export interface Partner {
-  id: string;
-  name?: string | null;
-  audience: string;
-  controller_id: string;
-  partner_mgmt_id?: string | null;
-  status: PartnerStatus;
-  created_at?: string;
-}
-
-export interface PartnerCreate {
-  partner_mgmt_id?: string | null;
-  audience: string;
-  controller_id: string;
-  name?: string | null;
-}
-
-export interface PartnerUpdate {
-  name?: string;
-  status?: PartnerStatus;
-  partner_mgmt_id?: string | null;
-}
-
-export type FetchType = "oneshot" | "periodic";
-
-// A versioned data-share policy's lifecycle: `pending` awaits AWE approval (at
-// most one per binding); `active` is in force; `superseded` / `rejected` are
-// historical. `failed`: the submission to AWE failed. `stale`: approved, but the
-// active policy changed after it was submitted, so it was not applied.
-// failed / stale / rejected versions can be resubmitted.
-export type PolicyStatus = "pending" | "active" | "superseded" | "rejected" | "failed" | "stale";
-
-export const RESUBMITTABLE: PolicyStatus[] = ["failed", "stale", "rejected"];
-
-// Durations are ISO-8601 duration strings (e.g. "P1Y", "P30D", "PT12H"),
-// matching the backend. max_fetch_frequency is likewise a string (e.g. "P1D").
-export interface PolicyUpsert {
-  allowed_data_scopes: string[];
-  allowed_purposes: string[];
-  allowed_subject_id_types: string[];
-  allowed_signing_algs: string[];
-  max_validity_duration?: string | null;
-  fetch_type: FetchType;
-  max_fetch_frequency?: string | null;
-  data_life?: string | null;
-}
-
-export interface PartnerPolicy extends PolicyUpsert {
-  id: string;
-  partner_id: string;
-  version: number;
-  status: PolicyStatus;
-  awe_request_id?: string | null;
-  // Version that was active when this one was created (0 = none).
-  base_version?: number | null;
-  // Why the version ended failed / stale / rejected.
-  status_reason?: string | null;
-  effective_from?: string | null;
-  // Values the current rules reject (a version saved before them). Such a
-  // version still loads; it must be fixed before it can be saved again.
-  issues?: string[];
-}
-
-// GET /consent/v1/meta — the allowed values the API validates against, so the
-// forms never hard-code them. `known_*` are open sets: values already in use,
-// offered only as suggestions.
-export interface PolicyMeta {
-  signing_algorithms: string[];
-  fetch_types: string[];
-  partner_statuses: string[];
-  known_controller_ids: string[];
-  known_data_scopes: string[];
-  known_purposes: string[];
-  known_subject_id_types: string[];
-}
-
-// ── AWE approval tasks (approver inbox — proxied to AWE) ──────────────────
-export interface AweTask {
-  id: string;
-  request_id: string;
-  stage_order: number;
-  assignee: string;
-  status: string; // open | claimed | completed | ...
-  artifact_type?: string | null;
-  artifact_id?: string | null;
-  policy_key?: string | null;
-  context?: Record<string, unknown> | null;
-  created_at: string;
-  due_at?: string | null;
-}
-
-export interface PagedTasks {
-  items: AweTask[];
-  total: number;
-  page: number;
-  page_size: number;
-  pages: number;
-  // false when the CM's AWE approvals are off (no inbox; policies take effect at once).
-  awe_enabled?: boolean;
-}
-
 // ── Decision log (admin status/audit view) ───────────────────────────────
 export interface DecisionLog {
   id: string;
+  // The partner's audience (e.g. bank-a), as in Partner Management.
   partner_id?: string | null;
   consent_id?: string | null;
   object_jti?: string | null;
@@ -119,13 +13,18 @@ export interface DecisionLog {
   reason_code: string;
   detail?: string | null;
   policy_version?: number | null;
+  // The PM policy applied: PM's id of that version, and its kind:key
+  // ("data_controller:farmer-registry"; "template:loan-profile@1" when a token
+  // presenter sent a consent template's terms — no PM policy).
+  policy_id?: string | null;
+  policy_ref?: string | null;
   created_at: string;
 }
 
-// ── Subject rights (transparency dashboard) ──────────────────────────────
-// Backed by ArtefactResponse. `purpose` is a structured object; the registry
-// decides its shape, so we render defensively.
-export type ConsentStatus = "active" | "revoked" | "expired" | "pending";
+// ── Consents (staff view) ────────────────────────────────────────────────
+// `purpose` is a structured object; the registry decides its shape, so we
+// render defensively.
+export type ConsentStatus = "active" | "revoked" | "expired";
 
 export interface Purpose {
   code?: string;
@@ -134,42 +33,10 @@ export interface Purpose {
   [k: string]: unknown;
 }
 
-export interface Artefact {
-  id: string;
-  consent_id?: string | null;
-  subject_id_type: string;
-  subject_id_value: string;
-  partner_id: string;
-  controller_id?: string | null;
-  purpose: Purpose;
-  effective_data_scopes: string[];
-  grants?: ArtefactGrant[] | null;
-  status: ConsentStatus;
-  source: string;
-  valid_from: string;
-  valid_until: string;
-  created_at: string;
-  revoked_at?: string | null;
-}
-
 // One grant per data controller (registry) in a consent.
 export interface Grant {
   data_controller: string;
   data_scopes: string[];
-}
-
-export interface ArtefactGrant extends Grant {
-  effective_data_scopes: string[];
-  granted_scopes?: string[];
-  policy_version?: number | null;
-}
-
-export interface Paginated<T> {
-  items: T[];
-  total: number;
-  page: number;
-  size: number;
-  pages: number;
 }
 
 export interface RevokeResponse {
@@ -178,21 +45,40 @@ export interface RevokeResponse {
   revoked_at: string;
 }
 
-// ── Consent-request (originate / redirect flow) ──────────────────────────
-export interface ConsentRequest {
-  id: string;
-  subject_id_type: string;
-  subject_id_value: string;
+// GET /consent/v1/consents/{id} (staff api).
+export interface StaffConsent {
+  consent_id: string;
+  status: ConsentStatus;
   partner_id: string;
-  controller_id?: string | null;
+  source: string;
+  subject_id: { type: string; value: string };
+  subject_identifiers?: { type: string; value: string }[];
   purpose: Purpose;
-  requested_scopes: string[];
-  // Present when the request spans several controllers (one grant each).
-  grants?: Grant[] | null;
-  status: string; // created | authenticated | approved | denied | expired
-  valid_from?: string | null;
-  valid_until?: string | null;
+  grants: {
+    data_controller?: string | null;
+    data_scopes: string[];
+    effective_data_scopes: string[];
+    policy_version?: number | null;
+    policy_id?: string | null;
+    policy_ref?: string | null;
+  }[];
+  valid_from: string;
+  valid_until: string;
+  assurance?: Record<string, unknown> | null;
+  // The consent template it was made from (a label).
+  template?: string | null;
+  // The assisted request it came from: its evidence downloads from there.
+  consent_request_id?: string | null;
   created_at: string;
+  revoked_at?: string | null;
+  receipt_id?: string | null;
+  evidence: VerificationEvidence[];
+  revocations: {
+    originated_by: string;
+    reason?: string | null;
+    revoked_by?: string | null;
+    created_at: string;
+  }[];
 }
 
 // ── Consent verifications (assisted consent, staff check of the signed form) ──
@@ -215,7 +101,8 @@ export interface VerificationRequest {
   id: string;
   status: string;
   method?: string | null;
-  use_case?: string | null;
+  // The consent template the request was made from (a label).
+  template?: string | null;
   subject_id: { type: string; value: string };
   // Other identifiers of the subject (e.g. the Farmer ID); the approver checks
   // them in the registry.

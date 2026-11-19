@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../api/client";
-import { useSubjectAuthConfig } from "../api/hooks";
-import type { ConsentRequest, Evidence, SubjectAuth } from "../api/types";
+import { useRequestSettings, useSubjectAuthConfig } from "../api/hooks";
+import type { ConfirmationTerms, ConsentRequest, Evidence, SubjectAuth } from "../api/types";
 import { ErrorNotice, StatusBadge } from "../components/Status";
 import {
   formatBytes,
@@ -37,6 +37,19 @@ export default function RequestDetailPage() {
   });
   const { data: authConfig } = useSubjectAuthConfig();
   const authRequired = !!authConfig?.enabled;
+  const { data: settings } = useRequestSettings();
+  // Assisted confirmation (scenario 0): offered when the install has it on and
+  // the CM gives terms for this request (403: the policy or template does not
+  // allow it).
+  const [mode, setMode] = useState<"form" | "confirm">("form");
+  const confirmable = !!settings?.assisted_confirmation && r?.status === "pending";
+  const { data: terms } = useQuery({
+    queryKey: ["confirmation", id],
+    queryFn: () => api.getConfirmation(id),
+    enabled: confirmable,
+    retry: false,
+  });
+  const canConfirm = confirmable && !!terms;
 
   const refresh = (next?: ConsentRequest) => {
     if (next) qc.setQueryData(["request", id], (old: ConsentRequest | undefined) => ({ ...old, ...next }));
@@ -58,7 +71,7 @@ export default function RequestDetailPage() {
   if (error instanceof ApiError && error.status === 404)
     return (
       <div className="card">
-        Request not found. <Link to="/requests">Back to requests</Link>
+        Request not found. <Link to="/consents">Back to consents</Link>
       </div>
     );
   if (error || !r) return <ErrorNotice error={error} what="the request" />;
@@ -70,6 +83,9 @@ export default function RequestDetailPage() {
   const authOk = !authRequired || authenticated;
   const pending = r.status === "pending";
   const cancellable = r.status === "pending" || r.status === "pending_verification";
+  const confirming = canConfirm && mode === "confirm";
+  const confirmed =
+    r.status === "approved" && !r.verified_by && !!r.verification_note?.startsWith("Assisted confirmation");
 
   return (
     <div>
@@ -82,15 +98,15 @@ export default function RequestDetailPage() {
         </div>
         <div className="row">
           <StatusBadge status={r.status} />
-          <Link to="/requests" className="btn-secondary">
-            Back to requests
+          <Link to="/consents" className="btn-secondary">
+            Back to consents
           </Link>
         </div>
       </div>
 
       {r.status === "approved" && r.consent_id && (
         <div className="notice notice-info">
-          Approved. The consent is active:{" "}
+          {confirmed ? "The person agreed. The consent is active:" : "Approved. The consent is active:"}{" "}
           <Link to={`/consents/${encodeURIComponent(r.consent_id)}`}>
             <code className="mono">{r.consent_id}</code>
           </Link>
@@ -120,25 +136,38 @@ export default function RequestDetailPage() {
             ))}
             <dt>Purpose</dt>
             <dd>{purposeLabel(r.purpose)}</dd>
-            {r.use_case && (
+            {r.template && (
               <>
-                <dt>Use case</dt>
+                <dt>Consent template</dt>
                 <dd>
-                  <code className="mono">{r.use_case}</code>
+                  <code className="mono">{r.template}</code>
                 </dd>
               </>
             )}
             <dt>Method</dt>
-            <dd>{r.method === "assisted" ? "Assisted (in person)" : (r.method ?? "—")}</dd>
+            <dd>
+              {confirmed
+                ? "Assisted confirmation (in person, no form)"
+                : r.method === "assisted"
+                  ? "Assisted (in person)"
+                  : (r.method ?? "—")}
+            </dd>
             <dt>Valid from</dt>
-            <dd>{r.valid_from ? formatDate(r.valid_from) : "On approval"}</dd>
+            <dd>{r.valid_from ? formatDate(r.valid_from) : confirming ? "When the person agrees" : "On approval"}</dd>
             <dt>Valid until</dt>
-            <dd>{formatDate(r.valid_until)}</dd>
+            <dd>{confirming && terms ? formatDate(terms.valid_until) : formatDate(r.valid_until)}</dd>
           </dl>
         </div>
         <div className="card">
           <h3 className="card-title">Progress</h3>
-          <Timeline r={r} hasSignedForm={hasSignedForm} authRequired={authRequired} authenticated={authenticated} />
+          <Timeline
+            r={r}
+            hasSignedForm={hasSignedForm}
+            authRequired={authRequired}
+            authenticated={authenticated}
+            confirming={confirming}
+            confirmed={confirmed}
+          />
         </div>
       </div>
 
@@ -160,6 +189,23 @@ export default function RequestDetailPage() {
         ))}
       </div>
 
+      {canConfirm && (
+        <div className="card">
+          <h3 className="card-title">How the person agrees</h3>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label className="row" style={{ fontWeight: 400 }}>
+              <input type="radio" name="mode" checked={mode === "form"} onChange={() => setMode("form")} />
+              Signed form: upload the form the person signed; Consent Manager staff check it.
+            </label>
+            <label className="row" style={{ fontWeight: 400 }}>
+              <input type="radio" name="mode" checked={mode === "confirm"} onChange={() => setMode("confirm")} />
+              Confirm here: after the national-ID login, the person agrees on this screen. The consent is active at
+              once, with no form and no check: the weakest proof.
+            </label>
+          </div>
+        </div>
+      )}
+
       {authRequired && (
         <SubjectAuthCard
           r={r}
@@ -170,11 +216,15 @@ export default function RequestDetailPage() {
         />
       )}
 
-      <EvidenceCard requestId={r.id} evidence={evidence} editable={pending} onChange={refresh} />
+      {confirming && terms ? (
+        <ConfirmCard requestId={r.id} terms={terms} authenticated={authenticated} onDone={refresh} />
+      ) : (
+        <EvidenceCard requestId={r.id} evidence={evidence} editable={pending} onChange={refresh} />
+      )}
 
       {(pending || cancellable) && (
         <div className="card">
-          {pending && (
+          {pending && !confirming && (
             <p style={{ marginTop: 0 }}>
               {!authOk
                 ? "Authenticate the person with their national ID, and upload the consent form they signed, before you submit the request for verification."
@@ -207,7 +257,7 @@ export default function RequestDetailPage() {
                   Cancel request
                 </button>
               )}
-              {pending && (
+              {pending && !confirming && (
                 <button
                   className="btn-primary"
                   disabled={!hasSignedForm || !authOk || submit.isPending}
@@ -238,11 +288,15 @@ function Timeline({
   hasSignedForm,
   authRequired,
   authenticated,
+  confirming,
+  confirmed,
 }: {
   r: ConsentRequest;
   hasSignedForm: boolean;
   authRequired: boolean;
   authenticated: boolean;
+  confirming: boolean;
+  confirmed: boolean;
 }) {
   const steps: Step[] = [
     {
@@ -253,7 +307,14 @@ function Timeline({
     },
   ];
   const s = r.status;
-  if (s === "pending") {
+  if (s === "pending" && confirming) {
+    steps.push({
+      label: authenticated ? "Person authenticated (national ID)" : "Authenticate the person (national ID)",
+      when: authenticated ? r.subject_authentication?.authenticated_at : undefined,
+      state: authenticated ? "done" : "current",
+    });
+    steps.push({ label: "The person agrees on this screen", state: authenticated ? "current" : "todo" });
+  } else if (s === "pending") {
     if (authRequired) {
       steps.push({
         label: authenticated ? "Person authenticated (national ID)" : "Authenticate the person (national ID)",
@@ -275,8 +336,16 @@ function Timeline({
         when: r.subject_authentication.authenticated_at,
         state: "done",
       });
-    if (r.submitted_at) steps.push({ label: "Submitted for verification", when: r.submitted_at, state: "done" });
-    if (s === "pending_verification") {
+    if (r.submitted_at && !confirmed)
+      steps.push({ label: "Submitted for verification", when: r.submitted_at, state: "done" });
+    if (confirmed) {
+      steps.push({
+        label: "The person agreed — consent active",
+        when: r.verified_at,
+        detail: r.verification_note ?? undefined,
+        state: "done",
+      });
+    } else if (s === "pending_verification") {
       steps.push({ label: "Verification by Consent Manager staff", state: "current" });
     } else if (s === "approved") {
       steps.push({
@@ -311,6 +380,58 @@ function Timeline({
         </li>
       ))}
     </ul>
+  );
+}
+
+function ConfirmCard({
+  requestId,
+  terms,
+  authenticated,
+  onDone,
+}: {
+  requestId: string;
+  terms: ConfirmationTerms;
+  authenticated: boolean;
+  onDone: (next?: ConsentRequest) => void;
+}) {
+  const [agreed, setAgreed] = useState(false);
+  const confirm = useMutation({
+    mutationFn: () => api.confirmRequest(requestId, terms.statement),
+    onSuccess: (next) => onDone(next),
+  });
+  return (
+    <div className="card">
+      <h3 className="card-title">The person&apos;s agreement</h3>
+      {!authenticated ? (
+        <p className="muted" style={{ marginTop: 0 }}>
+          Authenticate the person with their national ID first. Then show them this screen.
+        </p>
+      ) : (
+        <>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Show this to the person. Only they tick the box, once they have read it. The consent is active at once,
+            until {formatDate(terms.valid_until)}.
+          </p>
+          <label className="row" style={{ alignItems: "flex-start", gap: 10, fontWeight: 400 }}>
+            <input
+              type="checkbox"
+              checked={agreed}
+              onChange={(e) => setAgreed(e.target.checked)}
+              style={{ marginTop: 4 }}
+            />
+            <span>{terms.statement}</span>
+          </label>
+          {confirm.error && (
+            <div className="notice notice-error">{errText(confirm.error, "Could not record the agreement.")}</div>
+          )}
+          <div className="actions">
+            <button className="btn-primary" disabled={!agreed || confirm.isPending} onClick={() => confirm.mutate()}>
+              {confirm.isPending ? "Recording…" : "Record the agreement"}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

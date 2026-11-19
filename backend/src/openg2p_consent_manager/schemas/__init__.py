@@ -10,14 +10,6 @@ from .lifecycle import (
     RevokeRequest,
     RevokeResponse,
 )
-from .partner import (
-    PartnerCreate,
-    PartnerResponse,
-    PartnerUpdate,
-    PolicyMeta,
-    PolicyResponse,
-    PolicyUpsert,
-)
 from .verification import (
     ConsentObject,
     Decision,
@@ -35,12 +27,6 @@ __all__ = [
     "ConsentObject",
     "RequestContext",
     "Decision",
-    "PartnerCreate",
-    "PartnerUpdate",
-    "PartnerResponse",
-    "PolicyUpsert",
-    "PolicyResponse",
-    "PolicyMeta",
     "ConsentRequestCreate",
     "ConsentRequestResponse",
     "AuthenticateRequest",

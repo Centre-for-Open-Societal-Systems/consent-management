@@ -50,10 +50,12 @@ spec:
             {{- with (include "consentManager.exchangeEnv" $ | trim) }}
             {{- . | nindent 12 }}
             {{- end }}
+            {{- include "consentManager.receiptWithdrawalEnv" $ | nindent 12 }}
             {{- if eq (toString .Values.apiAudience) "staff" }}
             {{- with (include "consentManager.partnerPortalEnv" $ | trim) }}
             {{- . | nindent 12 }}
             {{- end }}
+            {{- include "consentManager.masterDataEnv" $ | nindent 12 }}
             {{- end }}
             # Per-audience overrides (the 4-API pattern): which controllers this
             # instance mounts, and whether Keycloak auth applies (partner=off).
@@ -61,9 +63,6 @@ spec:
               value: {{ .Values.apiAudience | quote }}
             - name: CONSENT_MANAGER_AUTH_ENABLED
               value: {{ tpl (.Values.authEnabled | toString) $ | quote }}
-            # AWE decision webhook target: always the STAFF api's Service.
-            - name: CONSENT_MANAGER_AWE_CALLBACK_URL
-              value: {{ include "consentManager.aweCallbackUrl" $ | quote }}
             {{- if .Values.signingKeyMounted }}
             - name: CONSENT_MANAGER_CM_SIGNING_P12_PATH
               value: {{ .Values.signingKey.mountPath }}/{{ .Values.signingKey.secretKey }}

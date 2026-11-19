@@ -7,8 +7,9 @@ database (the models use JSONB). Point them at a throwaway database with:
         pytest backend/tests
 
 The database is wiped at the start of the session. If it is unreachable, the
-tests are skipped. Partner signing keys normally come from Partner Management;
-here the verifier is replaced by an in-process one holding test keys.
+tests are skipped. Partner signing keys and policies come from Partner
+Management: here the verifier is replaced by an in-process one holding test
+keys, and PM's policy API by an in-memory fake (``pm`` fixture).
 """
 import asyncio
 import os
@@ -24,22 +25,17 @@ DATASOURCE = os.environ.get(
 # Settings are read once at import — set them before importing the app.
 os.environ["CONSENT_MANAGER_DB_DATASOURCE"] = DATASOURCE
 os.environ["CONSENT_MANAGER_AUTH_ENABLED"] = "false"
-os.environ["CONSENT_MANAGER_AWE_ENABLED"] = "false"
 os.environ["CONSENT_MANAGER_API_AUDIENCE"] = "all"
-os.environ["CONSENT_MANAGER_PARTNER_CACHE_ENABLED"] = "true"
+# Partner Management's policy API — served by FakePM through an httpx transport.
+PM_URL = "http://pm.test"
+os.environ["CONSENT_MANAGER_PARTNER_MGMT_API_URL"] = PM_URL
 os.environ.setdefault("CONSENT_MANAGER_LOGGING_LEVEL", "WARNING")
 
 # Shape of the tables this change alters, as created by the previous release:
-# `partners.audience` unique on its own, `consent_artefacts.object_jti` unique on
-# its own, controller_id NOT NULL, no grants / decision_logs.data_controller.
-# The session starts from this so the migration is exercised on legacy data.
+# `consent_artefacts.object_jti` unique on its own, controller_id NOT NULL, no
+# grants / decision_logs.data_controller. The session starts from this so the
+# migration is exercised on legacy data.
 LEGACY_DDL = [
-    """CREATE TABLE partners (
-        id VARCHAR PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ,
-        name VARCHAR(255), audience VARCHAR(255) NOT NULL, controller_id VARCHAR(255) NOT NULL,
-        status VARCHAR(20) NOT NULL, partner_mgmt_id VARCHAR(255))""",
-    "CREATE UNIQUE INDEX ix_partners_audience ON partners (audience)",
-    "CREATE INDEX ix_partners_controller_id ON partners (controller_id)",
     """CREATE TABLE consent_artefacts (
         id VARCHAR PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ,
         subject_id_type VARCHAR(50) NOT NULL, subject_id_value VARCHAR(255) NOT NULL,
@@ -61,11 +57,6 @@ LEGACY_DDL = [
         decision VARCHAR(10) NOT NULL, reason_code VARCHAR(40) NOT NULL, detail TEXT,
         policy_version INTEGER, request_ctx_hash VARCHAR(128))""",
 ]
-
-# A partner bound before the migration (legacy single binding + policy).
-LEGACY_AUDIENCE = "legacy-bank"
-LEGACY_CONTROLLER = "farmer-registry"
-LEGACY_PARTNER_ID = "legacy-binding-1"
 
 
 class FakePartnerKeys:
@@ -89,6 +80,89 @@ class FakePartnerKeys:
             return True
         except Exception:
             return False
+
+
+class FakePM:
+    """Partner Management's internal policy API (``GET /policies/{partner_id}
+    [?data_controller=]``), in memory. ``grant`` / ``revoke`` change a
+    partner's active policy (a new version) and drop the CM's cached answer for
+    it, so a change takes effect at once; ``down`` makes PM unreachable."""
+
+    def __init__(self):
+        self.policies = {}  # pm partner id -> {data_controller or "": PolicyOut}
+        self.versions = {}  # (pm partner id, data_controller or "") -> last version
+        self.down = False
+        self.max_age = None  # Cache-Control max-age to send, if any
+        self.requests = []
+        self.client = None  # the app's PmPolicyClient
+
+    def handler(self, request):
+        import httpx
+
+        self.requests.append(request)
+        if self.down:
+            raise httpx.ConnectError("Partner Management is down", request=request)
+        prefix = "/policies/"
+        if not request.url.path.startswith(prefix):
+            return httpx.Response(404, json={"errors": [{"code": "PM-404"}]})
+        pid = request.url.path[len(prefix):]
+        policies = self.policies.get(pid, {})
+        if "data_controller" in request.url.params:
+            wanted = ("data_controller", request.url.params["data_controller"])
+            items = [policies[wanted]] if wanted in policies else []
+        else:
+            items = list(policies.values())
+        if not items:
+            return httpx.Response(404, json={"errors": [{"code": "PM-POLICY-404"}]})
+        headers = {}
+        if self.max_age is not None:
+            headers["Cache-Control"] = f"public, max-age={self.max_age}"
+        return httpx.Response(200, json={"partner_id": pid, "policies": items},
+                              headers=headers)
+
+    def grant(self, audience, data_controller, scopes=(), **fields):
+        """Make ``fields`` the partner's active scope policy for
+        ``data_controller``. Returns the new version."""
+        from openg2p_consent_manager.services import pm_partner_id
+
+        pid = pm_partner_id(audience)
+        key = ("data_controller", data_controller)
+        version = self.versions.get((pid, key), 0) + 1
+        self.versions[(pid, key)] = version
+        policy = {
+            "id": str(uuid.uuid4()),
+            "partner_id": pid,
+            "data_controller": data_controller,
+            "version": version,
+            "status": "active",
+            "allowed_data_scopes": list(scopes),
+            "allowed_purposes": ["credit-assessment"],
+            "allowed_subject_id_types": ["FAYDA_FAN"],
+            "allowed_signing_algs": ["EdDSA"],
+            "max_validity_duration": "P1Y",
+            "fetch_type": "oneshot",
+            "max_fetch_frequency": None,
+            "data_life": None,
+            "effective_from": datetime.now(timezone.utc).isoformat(),
+            # Most tests sign their own consents (consent_jws); PM's default
+            # is false.
+            "allow_partner_consents": True,
+        }
+        policy.update(fields)
+        self.policies.setdefault(pid, {})[key] = policy
+        self._changed(audience)
+        return version
+
+    def revoke(self, audience, data_controller):
+        from openg2p_consent_manager.services import pm_partner_id
+
+        key = ("data_controller", data_controller)
+        self.policies.get(pm_partner_id(audience), {}).pop(key, None)
+        self._changed(audience)
+
+    def _changed(self, audience):
+        if self.client is not None:
+            self.client.invalidate(audience)
 
 
 def _db_reachable() -> bool:
@@ -126,7 +200,7 @@ def env(loop):
     from sqlalchemy import text
 
     from openg2p_consent_manager.app import Initializer
-    from openg2p_consent_manager.services import VerificationService
+    from openg2p_consent_manager.services import PmPolicyClient, VerificationService
 
     init = Initializer()
 
@@ -136,16 +210,6 @@ def env(loop):
             await conn.execute(text("CREATE SCHEMA public"))
             for ddl in LEGACY_DDL:
                 await conn.execute(text(ddl))
-            now = datetime.now(timezone.utc)
-            await conn.execute(
-                text(
-                    "INSERT INTO partners (id, created_at, name, audience, controller_id, "
-                    "status, partner_mgmt_id) VALUES (:id, :now, 'Legacy Bank', :aud, :ctl, "
-                    "'active', 'PM_LEGACY')"
-                ),
-                {"id": LEGACY_PARTNER_ID, "now": now, "aud": LEGACY_AUDIENCE,
-                 "ctl": LEGACY_CONTROLLER},
-            )
 
     loop.run_until_complete(reset_to_legacy())
     # The app's migrate runs its coroutine with asyncio.run; run it on our loop
@@ -153,27 +217,27 @@ def env(loop):
     with mock.patch("asyncio.run", loop.run_until_complete):
         init.migrate_database(None)
 
-    # The legacy partner's policy (created after migrate: partner_policies is new
-    # to this DB, but its shape is unchanged).
-    async def legacy_policy():
-        from openg2p_consent_manager.db import async_session
-        from openg2p_consent_manager.models import PartnerPolicy
-
-        async with async_session()() as session:
-            session.add(PartnerPolicy(
-                partner_id=LEGACY_PARTNER_ID, version=1, status="active",
-                allowed_data_scopes=["farmer_personal_details", "farm_details"],
-                allowed_purposes=[], allowed_subject_id_types=[],
-                allowed_signing_algs=["EdDSA"], fetch_type="oneshot",
-                effective_from=datetime.now(timezone.utc),
-            ))
-            await session.commit()
-
-    loop.run_until_complete(legacy_policy())
+    import httpx
 
     keys = FakePartnerKeys()
     VerificationService.get_component().crypto_helper = keys
-    return {"app": app_registry.get(), "keys": keys, "loop": loop, "init": init}
+    pm = FakePM()
+    pm.client = PmPolicyClient.get_component()
+    pm.client.transport = httpx.MockTransport(pm.handler)
+    return {"app": app_registry.get(), "keys": keys, "pm": pm, "loop": loop, "init": init}
+
+
+@pytest.fixture(scope="session")
+def pm_store(env):
+    return env["pm"]
+
+
+@pytest.fixture
+def pm(pm_store):
+    """The fake Partner Management; up again (and no max-age) after each test."""
+    yield pm_store
+    pm_store.down = False
+    pm_store.max_age = None
 
 
 @pytest.fixture(scope="session")
@@ -207,13 +271,15 @@ def run(env):
 
 
 class Partner:
-    """A test partner: a signing key registered under its PM reference."""
+    """A test partner: a signing key registered under its PM id (PARTNER_<AUD>)."""
 
-    def __init__(self, env, audience=None, pm_id=None):
+    def __init__(self, env, audience=None):
         from cryptography.hazmat.primitives.asymmetric import ed25519
 
+        from openg2p_consent_manager.services import pm_partner_id
+
         self.audience = audience or f"bank-{uuid.uuid4().hex[:8]}"
-        self.pm_id = pm_id or f"PM_{self.audience}"
+        self.pm_id = pm_partner_id(self.audience)
         self.key = ed25519.Ed25519PrivateKey.generate()
         env["keys"].register(self.pm_id, self.key.public_key())
 

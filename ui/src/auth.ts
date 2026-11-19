@@ -10,6 +10,9 @@ export interface AppConfig {
   keycloak: { url: string; realm: string; clientId: string };
   adminRole: string;
   approverRole: string;
+  // Partner Management UI, linked from the nav for admins (partners and their
+  // access policies are managed there). Empty = no link.
+  partnerManagementUiUrl?: string;
 }
 
 let config: AppConfig;

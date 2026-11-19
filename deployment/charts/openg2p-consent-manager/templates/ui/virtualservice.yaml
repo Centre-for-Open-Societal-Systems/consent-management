@@ -3,7 +3,7 @@ Single VirtualService for the staff host — serves the admin console SPA and it
 API on one origin (no CORS). Two ordered routes (Istio matches in declaration
 order, so the more-specific API prefix must come first):
 
-  1. /consent/  → staff API Service   (the console's admin/approvals/decisions)
+  1. /consent/  → staff API Service   (the console's consents, verifications, decisions)
   2. /          → UI Service          (the SPA, catch-all)
 
 Because this VS owns the staff host, the staff API's own VirtualService is

@@ -15,11 +15,6 @@ class ReasonCode(str, Enum):
     purpose_not_allowed = "purpose_not_allowed"
     scope_exceeds_policy = "scope_exceeds_policy"
     validity_exceeds_policy = "validity_exceeds_policy"
-    # The policy's consent_method does not accept this kind of consent (e.g.
-    # a partner-signed consent_jws for an "otp" partner).
-    consent_method_not_allowed = "consent_method_not_allowed"
-    # request_context.purpose is not the purpose the subject consented to.
-    purpose_mismatch = "purpose_mismatch"
     expired = "expired"
     revoked = "revoked"
     replay = "replay"
@@ -47,6 +42,21 @@ class ReasonCode(str, Enum):
     not_yet_valid = "not_yet_valid"
     # consent_partner_id is not the partner the consent was given to.
     partner_mismatch = "partner_mismatch"
+    # ── Partner policies (Partner Management) ──
+    # Partner Management could not be reached and no policy answer is cached
+    # (fail closed; retry later).
+    policy_unavailable = "policy_unavailable"
+    # request_context carries terms (limits, template) but the caller is not a
+    # configured token presenter (receipt_presenters): only a presenter may
+    # send the terms of a request.
+    caller_terms_not_allowed = "caller_terms_not_allowed"
+    # Consent by lookup (neither consent_jws nor consent_id): the CM holds no
+    # active, valid consent of that partner for that subject and purpose
+    # (caller-terms mode) or data controller (a registry).
+    consent_not_found = "consent_not_found"
+    # A partner-signed consent (consent_jws) presented by a partner whose
+    # applicable policy does not set allow_partner_consents.
+    partner_consent_not_accepted = "partner_consent_not_accepted"
 
 
 class SubjectId(BaseModel):

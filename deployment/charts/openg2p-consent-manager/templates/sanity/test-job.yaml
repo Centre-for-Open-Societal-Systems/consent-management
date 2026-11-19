@@ -34,7 +34,8 @@ spec:
               value: {{ tpl $s.baseUrl $ | quote }}
             - name: SANITY_PARTNER_BASE_URL
               value: {{ tpl $s.partnerBaseUrl $ | quote }}
-            # NOTE: SANITY_VERIFY_TLS is NOT set here — it comes from the
+            # NOTE: SANITY_VERIFY_TLS and SANITY_CONTROLLER_ID are NOT set here —
+            # they come from the
             # consentManagerSanity.pmSeedEnv include below (which pm-seed shares).
             # Emitting it in both places produced duplicate env keys, which
             # server-side apply rejects: "duplicate entries for key
@@ -47,11 +48,10 @@ spec:
               value: {{ $s.failOnError | quote }}
             - name: SANITY_READINESS_TIMEOUT
               value: {{ $s.readinessTimeout | quote }}
-            - name: SANITY_CONTROLLER_ID
-              value: {{ $s.controllerId | quote }}
             - name: SANITY_AUTH_ENABLED
               value: {{ .Values.global.consentManagerAuthEnabled | quote }}
-            # e2e (runE2e) needs a client-credentials token with the admin role.
+            # Client-credentials fallback for the PM seed when the PM admin
+            # client secret is not available.
             - name: SANITY_TOKEN_URL
               value: "{{ tpl .Values.global.keycloakIssuerUrl $ }}/protocol/openid-connect/token"
             - name: SANITY_CLIENT_ID

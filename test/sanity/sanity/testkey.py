@@ -18,6 +18,8 @@ MC4CAQAwBQYDK2VwBCIEIEzzrTrPbzYjc2k3BCPMcK6vaULPtmvxVo2EdKjSTW3a
 -----END PRIVATE KEY-----
 """
 
-# Stable identifiers for the persistent sanity partner in PM.
-DEFAULT_PARTNER_ID = "PARTNER_CM_SANITY"
+# Stable identifiers for the persistent sanity partner. Its audience (the
+# consent's `aud`) maps to its PM partner by convention: cm-sanity ->
+# PARTNER_CM_SANITY.
+DEFAULT_AUDIENCE = "cm-sanity"
 DEFAULT_KID = "cm-sanity-1"

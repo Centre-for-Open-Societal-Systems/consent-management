@@ -49,7 +49,7 @@ export default function VerificationsPage() {
   return (
     <div>
       <div className="spread">
-        <h1 style={{ margin: 0 }}>Consent verifications</h1>
+        <h1 style={{ margin: 0 }}>Consent Approvals</h1>
         <select
           aria-label="Status"
           value={status}
@@ -63,14 +63,13 @@ export default function VerificationsPage() {
         </select>
       </div>
       <p className="muted" style={{ marginTop: 0, marginBottom: 24 }}>
-        Consents a partner obtained in person, with the form the subject signed. Check that the form
-        matches the subject and the request, then approve (the consent becomes active) or reject.
+        Consents collected in the partner portal, waiting for a staff check
       </p>
 
       {isLoading && <div className="loading">Loading…</div>}
       {error && (
         <div className="notice notice-error">
-          Could not load verifications. {error instanceof ApiError ? error.message : ""}
+          Could not load consent approvals. {error instanceof ApiError ? error.message : ""}
         </div>
       )}
       {data && data.items.length === 0 && (
@@ -111,13 +110,20 @@ export default function VerificationsPage() {
                   </td>
                   <td>
                     {purposeText(r.purpose)}
-                    {r.use_case && <div className="muted" style={{ fontSize: 12 }}>{r.use_case}</div>}
+                    {r.template && <div className="muted" style={{ fontSize: 12 }}>{r.template}</div>}
                   </td>
                   <td className="muted">{r.grants.map((g) => g.data_controller).join(", ")}</td>
                   <td className="muted">{dateTime(r.created_at)}</td>
                   <td className="muted">{dateTime(r.submitted_at)}</td>
                   <td>
                     <span className={`badge badge-${r.status}`}>{r.status.replace(/_/g, " ")}</span>
+                    {r.consent_id && (
+                      <div style={{ fontSize: 12 }}>
+                        <Link to={`/consents/${r.consent_id}`} onClick={(e) => e.stopPropagation()}>
+                          View consent
+                        </Link>
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}

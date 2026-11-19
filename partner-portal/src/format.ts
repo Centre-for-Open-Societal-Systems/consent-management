@@ -57,6 +57,10 @@ const EVIDENCE_WORDS: Record<string, string> = {
 // "Assisted, signed form verified by jane.doe on 3 Oct 2026".
 export function assuranceText(a?: Assurance | null): string {
   if (!a || !a.method) return "Not recorded";
+  if (a.method === "assisted_confirmation") {
+    const by = typeof a.confirmed_by === "string" ? ` (by ${a.confirmed_by})` : "";
+    return `Assisted confirmation: the person agreed after the national-ID login${by}; no signed form, no check by the Consent Manager`;
+  }
   const method = a.method.charAt(0).toUpperCase() + a.method.slice(1).replace(/_/g, " ");
   const parts = [method];
   const evidence = (a.evidence ?? []).map((e) => EVIDENCE_WORDS[e] ?? e.replace(/_/g, " "));
@@ -92,4 +96,18 @@ export function openBlobIn(win: Window | null, blob: Blob): void {
   if (win) win.location.href = url;
   else window.open(url, "_blank");
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+// A date input (yyyy-mm-dd) as an ISO timestamp at the start / end of that local day.
+export function dayStart(d: string): string {
+  return new Date(`${d}T00:00:00`).toISOString();
+}
+export function dayEnd(d: string): string {
+  return new Date(`${d}T23:59:59`).toISOString();
+}
+// Today as yyyy-mm-dd (local).
+export function today(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }

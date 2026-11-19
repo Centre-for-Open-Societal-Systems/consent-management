@@ -1,7 +1,12 @@
 import os
 from dataclasses import dataclass
 
-from .testkey import DEFAULT_KID, DEFAULT_PARTNER_ID, TEST_PRIVATE_KEY_PEM
+from .testkey import DEFAULT_AUDIENCE, DEFAULT_KID, TEST_PRIVATE_KEY_PEM
+
+
+def pm_partner_id_for(audience: str) -> str:
+    """PM partner ID of a partner audience: bank-a -> PARTNER_BANK_A."""
+    return "PARTNER_" + audience.upper().replace("-", "_")
 
 
 def _bool(value, default=False):
@@ -13,7 +18,7 @@ def _bool(value, default=False):
 @dataclass
 class Config:
     # CM is split by API audience (staff / partner). base_url is the STAFF api
-    # (policy admin); partner_base_url is the PARTNER api (/validate, JWKS,
+    # (Keycloak); partner_base_url is the PARTNER api (/validate, JWKS,
     # receipts). Default partner→base_url so a single audience=all instance works.
     base_url: str          # STAFF api base, e.g. http://consent-manager-api (no path prefix)
     partner_base_url: str  # PARTNER api base, e.g. http://consent-manager-partner-api
@@ -24,16 +29,17 @@ class Config:
     token_url: str         # Keycloak token endpoint (e2e + auth)
     client_id: str         # client-credentials client (has CONSENT_MANAGER_ADMIN)
     client_secret: str
-    controller_id: str     # controller/module used for the self-contained test partner
+    controller_id: str     # data controller the sanity partner's PM policy is for
     # ── Partner Management (signed e2e round-trip) ──────────────────────────
-    # Partner signing keys live in PM, so CM can't self-inject one. The e2e signs
-    # with a private key (bundled TEST key by default) and ensures a persistent
-    # test partner in PM holds the matching public key. The public half is derived
-    # from the private key at seed time — only the private key is a "secret".
-    pm_partner_id: str          # stable PM reference for the sanity partner
+    # Partner keys and policies live in PM, so CM can't self-inject either. The
+    # e2e signs with a private key (bundled TEST key by default) and ensures a
+    # persistent test partner in PM holds the matching public key and a scope
+    # policy for controller_id. The public half is derived from the private key
+    # at seed time — only the private key is a "secret".
+    partner_audience: str       # the sanity partner's audience (consent `aud`)
     pm_kid: str                 # kid registered in PM for the sanity key
     pm_private_key_pem: str     # PEM private key the e2e signs with
-    pm_partner_api_url: str     # PM key-fetch base (to check servability), e.g. http://partner-management-partner-api
+    pm_partner_api_url: str     # PM partner API base (keys, policies; to check servability), e.g. http://partner-management-partner-api
     pm_admin_url: str           # PM staff-portal-api base (to seed), e.g. http://partner-management-staff-portal-api
     # partner_manager client-credentials to call the PM admin API. Empty when PM
     # auth is disabled (COMMON_AUTH_ENABLED=false).
@@ -57,7 +63,7 @@ class Config:
             client_id=os.environ.get("SANITY_CLIENT_ID", "consent-manager"),
             client_secret=os.environ.get("SANITY_CLIENT_SECRET", ""),
             controller_id=os.environ.get("SANITY_CONTROLLER_ID", "sanity-controller"),
-            pm_partner_id=os.environ.get("SANITY_PM_PARTNER_ID") or DEFAULT_PARTNER_ID,
+            partner_audience=os.environ.get("SANITY_PARTNER_AUDIENCE") or DEFAULT_AUDIENCE,
             pm_kid=os.environ.get("SANITY_PM_KID") or DEFAULT_KID,
             pm_private_key_pem=os.environ.get("SANITY_PM_PRIVATE_KEY_PEM") or TEST_PRIVATE_KEY_PEM,
             pm_partner_api_url=(os.environ.get("SANITY_PM_PARTNER_API_URL") or "").rstrip("/"),
@@ -66,6 +72,11 @@ class Config:
             pm_admin_client_id=os.environ.get("SANITY_PM_ADMIN_CLIENT_ID", "partner-management"),
             pm_admin_client_secret=os.environ.get("SANITY_PM_ADMIN_CLIENT_SECRET", ""),
         )
+
+    @property
+    def pm_partner_id(self) -> str:
+        """The sanity partner's PM ID — CM looks up keys and policy by it."""
+        return pm_partner_id_for(self.partner_audience)
 
     @property
     def can_reach_pm(self) -> bool:

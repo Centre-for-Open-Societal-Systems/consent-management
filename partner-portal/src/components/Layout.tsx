@@ -1,7 +1,7 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { ClipboardList, KeyRound, LayoutGrid, LogOut, ShieldCheck } from "lucide-react";
-import { ApiError, compositeUrl } from "../api/client";
-import { useMe } from "../api/hooks";
+import { History, LayoutGrid, LogOut, ShieldCheck } from "lucide-react";
+import { ApiError } from "../api/client";
+import { useAccess, useMe } from "../api/hooks";
 import { isDevMode, logout } from "../auth";
 import NotPartnerPage from "../pages/NotPartnerPage";
 import "./Layout.css";
@@ -12,6 +12,7 @@ const navClass = ({ isActive }: { isActive: boolean }) => `nav-item${isActive ? 
 
 export default function Layout() {
   const me = useMe();
+  const access = useAccess();
 
   // 403 on /me: signed in, but no partner_id claim or no partner role.
   if (me.error instanceof ApiError && me.error.status === 403) return <NotPartnerPage />;
@@ -19,25 +20,20 @@ export default function Layout() {
   return (
     <div className="shell">
       <aside className="sidebar">
-        <NavLink to="/requests" className="brand" title="Partner Portal">
+        <NavLink to="/consents" className="brand" title="Partner Portal">
           <img src="/openg2p-logo-horizontal.svg" alt="OpenG2P" className="brand-logo" />
           <span className="brand-product">Partner Portal</span>
         </NavLink>
         <nav className="nav">
-          <NavLink to="/requests" className={navClass}>
-            <ClipboardList size={18} /> Requests
-          </NavLink>
           <NavLink to="/consents" className={navClass}>
             <ShieldCheck size={18} /> Consents
           </NavLink>
-          <NavLink to="/access" className={navClass}>
-            <KeyRound size={18} /> What we can ask for
+          <NavLink to="/templates" className={navClass}>
+            <LayoutGrid size={18} /> {access.data && access.data.consent_by !== "template" ? "Data access" : "Consent templates"}
           </NavLink>
-          {compositeUrl() && (
-            <NavLink to="/use-cases" className={navClass}>
-              <LayoutGrid size={18} /> Use cases
-            </NavLink>
-          )}
+          <NavLink to="/history" className={navClass}>
+            <History size={18} /> History
+          </NavLink>
         </nav>
         <div className="sidebar-user">
           {isDevMode() && <span className="dev-pill">dev</span>}

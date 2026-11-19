@@ -152,24 +152,17 @@ code.mono {
   color: #1e7e45;
 }
 .badge-pending,
-.badge-stale,
 .badge-in_review {
   background: rgba(245, 187, 26, 0.2);
   color: #8a6a07;
 }
-.badge-suspended,
 .badge-revoked,
 .badge-denied,
 .badge-rejected,
-.badge-failed,
 .badge-expired,
 .badge-deny {
   background: rgba(192, 57, 43, 0.12);
   color: var(--color-danger);
-}
-.badge-superseded {
-  background: rgba(6, 19, 39, 0.06);
-  color: var(--color-text-muted);
 }
 
 /* ── Field-scope chips ───────────────────────────────────────────────── */
@@ -232,78 +225,6 @@ code.mono {
 .loading {
   color: var(--color-text-muted);
   padding: 24px 0;
-}
-
-/* ── Choice groups, suggestions, flagged values ─────────────────────── */
-fieldset.checks-field {
-  border: none;
-  padding: 0;
-  margin: 0 0 16px;
-  min-width: 0;
-}
-fieldset.checks-field legend {
-  font-weight: 500;
-  margin-bottom: 6px;
-  padding: 0;
-}
-.checks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 20px;
-}
-.field .checks label,
-.checks label.check {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 400;
-  margin: 0;
-  cursor: pointer;
-}
-.check.invalid .flag {
-  font-size: 12px;
-  color: var(--color-danger);
-}
-.suggestions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-  font-size: 12px;
-}
-.suggestions .chip {
-  padding: 3px 10px;
-  font-size: 12px;
-  font-family: var(--font-body);
-}
-.chip.invalid {
-  background: rgba(192, 57, 43, 0.1);
-  border-color: rgba(192, 57, 43, 0.4);
-  color: var(--color-danger);
-  cursor: default;
-}
-.field-error {
-  font-size: 12px;
-  color: var(--color-danger);
-  margin-top: 4px;
-}
-.duration input[type="number"] {
-  width: 110px;
-  flex: 0 0 auto;
-  padding: 8px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  font-family: var(--font-body);
-  font-size: 14px;
-}
-.field .duration input[type="text"],
-.field .duration select {
-  width: auto;
-  flex: 1;
-}
-.field input[aria-invalid="true"] {
-  border-color: var(--color-danger);
 }
 
 /* Assisted-consent verification statuses. */

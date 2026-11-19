@@ -24,28 +24,58 @@ key. Its claims carry `jti`, `aud`, `subject_id`, `purpose`, `fetch_type`,
 
 `POST /consent/v1/validate` takes `consent_jws`, an optional `data_controller`
 (the calling registry) and an optional `request_context {requested_scopes,
-subject_id}`:
+subject_id, purpose, limits, template}`:
 
 - With `grants`, `data_controller` is required and selects the grant; a
   controller without a grant is denied `controller_not_granted`. With the
   single-registry form, a `data_controller` that is given must match.
-- A partner (audience) can be bound to several controllers, each binding with
-  its own policy. Effective scopes = grant ∩ that binding's policy (∩
-  `requested_scopes`).
+- What a partner may access is its policy in Partner Management (PM), one per
+  controller, read from PM (`GET /policies/PARTNER_<AUD>?data_controller=…`)
+  and cached. Effective scopes = grant ∩ that policy (∩ `requested_scopes`).
+  No policy: `unknown_partner`; PM unreachable and nothing cached:
+  `policy_unavailable`.
+- Caller-terms mode (a configured receipt presenter, e.g. the Composite,
+  sending `request_context.purpose`): the terms it sends apply instead of the
+  partner's scope policies, and no partner policy is read. The consent's
+  purpose must be `purpose` (`purpose_not_allowed`); `requested_scopes` is
+  required and is the ceiling (grant ∩ `requested_scopes`); `limits`
+  (`allowed_subject_id_types`, `max_validity_duration`, `allowed_signing_algs`,
+  `allow_partner_consents` — absent = false) apply; `template` is a label,
+  recorded as `policy_ref: template:<code>`. `limits` or `template` from any
+  other caller: `caller_terms_not_allowed`.
+- A partner-signed `consent_jws` is accepted only when the applicable policy
+  (or, in caller-terms mode, `limits`) sets `allow_partner_consents` (else
+  `partner_consent_not_accepted`).
+- Consent by lookup at a registry: neither `consent_jws` nor `consent_id`, with
+  `partner_id`, `data_controller` and `request_context.subject_id` — the CM
+  picks the partner's active consent for that subject (its subject or one of its
+  `subject_identifiers`; type spelled exactly)
+  with a grant for that controller (latest `valid_until`, then newest; none:
+  `consent_not_found`) and validates it under the scope policy.
 - `request_context.subject_id` of the consent subject's type but another value
   is denied `subject_mismatch`.
 - Replay/idempotency is per (`jti`, `data_controller`): each registry gets its
   own decision and receipt.
 - The response adds `data_controller`.
 
-Bindings: `POST /consent/v1/partners` with an existing `audience` and a new
-`controller_id` adds a binding (409 if that pair exists);
-`GET /consent/v1/partners?audience=…` lists a partner's bindings. Policies stay
-per binding id (`/partners/{id}/policy`).
+Partners, their keys and their policies are managed in Partner Management;
+the Consent Manager keeps none.
 
 Originated consents (`/consent-requests`) may carry `grants` too, and the
-subject approves each controller's scopes. They cannot yet be presented at
-`/validate`, which takes a partner-signed JWS only.
+subject approves each controller's scopes. In the exchange role
+(`receipt_issuer` and `receipt_presenters` set), a consent request (lifecycle
+or partner portal) must name a consent `template` offered to the partner by the
+template source (`CONSENT_MANAGER_CONSENT_TEMPLATE_SOURCE_URL`, the URL of its
+template collection: `GET <url>?partner=<audience>`, `GET
+<url>/<code>?partner=<audience>`; not offered → `422 template_not_offered`;
+unreachable → 503; a request without a template → `400`). The consent takes
+the template's purpose and its scopes per registry (optional `grants` choose
+within them, required scopes included), its limits apply (subject ID types,
+longest validity, also the default validity), and the template's code is kept
+as a label (`template`). It is presented in caller-terms mode: by
+`consent_id`, or by lookup — a presenter sends neither `consent_jws` nor
+`consent_id`, and the CM picks the partner's active consent for the subject
+and purpose (latest `valid_until`, then newest; none: `consent_not_found`).
 
 ## Tests
 

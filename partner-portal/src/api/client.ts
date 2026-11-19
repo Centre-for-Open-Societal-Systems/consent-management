@@ -4,18 +4,18 @@
 // not set up as a partner user, handled by the layout).
 import { getConfig, getToken, login, refreshToken } from "../auth";
 import type {
-  Binding,
   Consent,
   ConsentRequest,
   ConsentRequestCreate,
+  ConfirmationTerms,
   Evidence,
   Me,
   Page,
+  PartnerAccess,
   RequestSettings,
   SubjectAuth,
   SubjectAuthConfig,
   SubjectAuthStart,
-  UseCase,
 } from "./types";
 
 export class ApiError extends Error {
@@ -31,7 +31,7 @@ export class ApiError extends Error {
 function errorMessage(body: unknown, fallback: string): { message: string; reason?: string } {
   const b = body as Record<string, unknown> | undefined;
   // Validation errors: 400 {"errors": [{code, message}]}; FastAPI: {"detail": …};
-  // composite: {"error": {code, message}}.
+  // the CM's own: {"error": "…"} or {"error": {code, message}}.
   const listed = Array.isArray(b?.errors)
     ? (b!.errors as { message?: string }[]).map((e) => e.message).filter(Boolean).join("; ")
     : undefined;
@@ -108,7 +108,7 @@ export interface ListParams {
 
 export const api = {
   me: () => request<Me>(`${P}/me`),
-  bindings: () => request<Binding[]>(`${P}/bindings`),
+  access: () => request<PartnerAccess>(`${P}/access`),
 
   // ── Consent requests ───────────────────────────────────────────────
   listRequests: (p: ListParams = {}) =>
@@ -138,6 +138,14 @@ export const api = {
     request<ConsentRequest>(`${P}/consent-requests/${encodeURIComponent(id)}/submit`, { method: "POST" }),
   cancelRequest: (id: string) =>
     request<ConsentRequest>(`${P}/consent-requests/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
+  // Assisted confirmation (scenario 0): the terms to show, then the person's "I agree".
+  getConfirmation: (id: string) =>
+    request<ConfirmationTerms>(`${P}/consent-requests/${encodeURIComponent(id)}/confirmation`),
+  confirmRequest: (id: string, statement: string) =>
+    request<ConsentRequest>(`${P}/consent-requests/${encodeURIComponent(id)}/confirm`, {
+      method: "POST",
+      body: JSON.stringify({ statement, agreed: true }),
+    }),
 
   // ── The subject's national-ID login (eSignet) ─────────────────────
   subjectAuthConfig: () => request<SubjectAuthConfig>(`${P}/subject-auth`),
@@ -157,24 +165,3 @@ export const api = {
   // and the CM's signed statement tying them together.
   record: (id: string) => requestBlob(`${P}/consents/${encodeURIComponent(id)}/record`),
 };
-
-// ── Composite (public, no auth) ──────────────────────────────────────
-export function compositeUrl(): string {
-  return (getConfig().compositeUrl ?? "").replace(/\/$/, "");
-}
-
-export async function listUseCases(): Promise<UseCase[]> {
-  const res = await fetch(`${compositeUrl()}/composite/v1/use-cases`);
-  const text = await res.text();
-  let body: unknown;
-  try {
-    body = text ? JSON.parse(text) : undefined;
-  } catch {
-    body = undefined;
-  }
-  if (!res.ok) {
-    const { message, reason } = errorMessage(body, res.statusText || `HTTP ${res.status}`);
-    throw new ApiError(res.status, message, reason);
-  }
-  return ((body as { use_cases?: UseCase[] })?.use_cases ?? []) as UseCase[];
-}

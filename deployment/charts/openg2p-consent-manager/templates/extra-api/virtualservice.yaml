@@ -17,6 +17,57 @@ spec:
   gateways:
     - {{ default (include "common.names.fullname" .) .Values.istio.virtualservice.gateway }}
   http:
+{{- $prefix := include "common.tplvalues.render" (dict "value" .Values.istio.virtualservice.prefix "context" $) }}
+{{- $rewrite := include "common.tplvalues.render" (dict "value" (.Values.istio.virtualservice.rewriteUri | default "/") "context" $) }}
+{{- if eq (toString .Values.apiAudience) "partner" }}
+{{- /* Partner api: /validate and the rest have no login and are called in
+     cluster only (registries, the Composite). The gateway is reachable from
+     outside, so only the paths in partnerApi.publicPaths (and, when
+     partnerApi.exposeReceiptStatus, the consent-token status) are routed;
+     anything else on this host gets a 404 from the gateway. */}}
+{{- $pa := $.Values.partnerApi | default dict }}
+{{- $dest := include "common.tplvalues.render" (dict "value" .Values.istio.virtualservice.destination "context" $) }}
+{{- $destPort := include "common.tplvalues.render" (dict "value" .Values.istio.virtualservice.destinationPort "context" $) }}
+{{- range $path := ($pa.publicPaths | default list) }}
+    - headers:
+        request:
+          set:
+            x-forwarded-host: {{ $hostname | quote }}
+            x-forwarded-proto: https
+      match:
+        - uri:
+            prefix: {{ printf "%s%s" (trimSuffix "/" $prefix) $path | quote }}
+      rewrite:
+        uri: {{ printf "%s%s" (trimSuffix "/" $rewrite) $path | quote }}
+      route:
+        - destination:
+            host: {{ $dest }}
+            port:
+              number: {{ $destPort }}
+{{- end }}
+{{- if $pa.exposeReceiptStatus }}
+    # GET /consent/v1/receipts/{jti}/status only (not the receipt itself).
+    - headers:
+        request:
+          set:
+            x-forwarded-host: {{ $hostname | quote }}
+            x-forwarded-proto: https
+      match:
+        - uri:
+            regex: {{ printf "^%s/consent/v1/receipts/[^/]+/status$" (regexQuoteMeta (trimSuffix "/" $prefix)) | quote }}
+          method:
+            exact: GET
+      rewrite:
+        uriRegexRewrite:
+          match: {{ printf "^%s/" (regexQuoteMeta (trimSuffix "/" $prefix)) | quote }}
+          rewrite: {{ printf "%s/" (trimSuffix "/" $rewrite) | quote }}
+      route:
+        - destination:
+            host: {{ $dest }}
+            port:
+              number: {{ $destPort }}
+{{- end }}
+{{- else }}
     - headers:
         request:
           set:
@@ -34,6 +85,7 @@ spec:
             host: {{ include "common.tplvalues.render" (dict "value" .Values.istio.virtualservice.destination "context" $) }}
             port:
               number: {{ include "common.tplvalues.render" (dict "value" .Values.istio.virtualservice.destinationPort "context" $) }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

@@ -8,7 +8,9 @@ import { formatDateTime, purposeLabel, statusLabel } from "../format";
 
 const LIMIT = 25;
 
-export default function RequestsPage() {
+// Every consent request the organisation raised, newest first: in progress,
+// approved (with its consent), rejected with the reason, cancelled.
+export default function HistoryPage() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const status = params.get("status") ?? "";
@@ -31,7 +33,7 @@ export default function RequestsPage() {
   return (
     <div>
       <div className="spread">
-        <h1 style={{ margin: 0 }}>Consent requests</h1>
+        <h1 style={{ margin: 0 }}>History</h1>
         <div className="filters">
           <select
             aria-label="Status"
@@ -45,15 +47,11 @@ export default function RequestsPage() {
               </option>
             ))}
           </select>
-          <Link to="/requests/new" className="btn-primary">
-            New request
-          </Link>
         </div>
       </div>
       <p className="muted page-intro">
-        Requests your organisation has raised for a subject's consent. Upload the subject's signed
-        consent form and submit the request; Consent Manager staff verify it before the consent
-        becomes active.
+        Every consent request your organisation has raised, and what became of it: approved (with
+        its consent), rejected with the Consent Manager's reason, or cancelled.
       </p>
 
       {isLoading && <div className="loading">Loading…</div>}
@@ -88,7 +86,7 @@ export default function RequestsPage() {
                   </td>
                   <td>
                     {purposeLabel(r.purpose)}
-                    {r.use_case && <div className="muted" style={{ fontSize: 12 }}>{r.use_case}</div>}
+                    {r.template && <div className="muted" style={{ fontSize: 12 }}>{r.template}</div>}
                   </td>
                   <td className="muted">{r.grants.map((g) => g.data_controller).join(", ")}</td>
                   <td className="muted">{r.created_by ?? "—"}</td>

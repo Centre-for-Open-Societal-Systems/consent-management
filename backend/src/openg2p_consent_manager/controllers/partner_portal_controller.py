@@ -9,12 +9,14 @@ from openg2p_fastapi_common.controller import BaseController
 from ..auth import PartnerUser, current_partner_user
 from ..config import Settings
 from ..schemas.portal import (
+    AssistedConfirm,
     AssistedRequestCreate,
     AssistedRequestDetail,
     AssistedRequestList,
     AssistedRequestResponse,
     CodeListOut,
     CodeOption,
+    ConfirmationTerms,
     EvidenceResponse,
     PartnerAccessView,
     PartnerConsentList,
@@ -49,7 +51,7 @@ _logger = logging.getLogger(_config.logging_default_logger_name)
 
 
 class PartnerPortalController(BaseController):
-    """Partner portal API (consent scenario 1) — partner users from the
+    """Partner portal API (consent scenarios 1 and 0) — partner users from the
     Keycloak ``partner`` realm. Every call is scoped to the token's
     ``partner_id``; another partner's request or consent is 404. Disabled (404)
     while the partner realm is not configured."""
@@ -93,6 +95,16 @@ class PartnerPortalController(BaseController):
         )
         route(
             "/consent-requests/{request_id}/cancel", self.cancel, "POST",
+            AssistedRequestResponse,
+        )
+        # Assisted confirmation (scenario 0): the terms to show the subject after
+        # the national-ID login, and the "I agree" that makes the consent at once.
+        route(
+            "/consent-requests/{request_id}/confirmation", self.confirmation, "GET",
+            ConfirmationTerms,
+        )
+        route(
+            "/consent-requests/{request_id}/confirm", self.confirm, "POST",
             AssistedRequestResponse,
         )
         # The subject's national-ID login (eSignet): start it, follow it; the
@@ -243,6 +255,33 @@ class PartnerPortalController(BaseController):
             return error(exc.status_code, exc.detail)
         return await self._request_response(req)
 
+    async def confirmation(
+        self, request_id: str, user: PartnerUser = Depends(current_partner_user)
+    ):
+        """The terms of an assisted confirmation (scenario 0): the exact
+        statement to show the subject and the consent it makes. 403 when the
+        install or the partner's policy does not allow it."""
+        try:
+            terms = await self.assisted.confirmation(request_id, user.partner_id)
+        except LifecycleError as exc:
+            return error(exc.status_code, exc.detail)
+        return ConfirmationTerms(**terms)
+
+    async def confirm(
+        self, request_id: str, data: AssistedConfirm,
+        user: PartnerUser = Depends(current_partner_user),
+    ):
+        """The subject agreed to the statement shown (assisted confirmation):
+        the consent is active at once. Needs the subject's recent national-ID
+        login; no signed form, no Consent Approver."""
+        try:
+            req, _ = await self.assisted.confirm(
+                request_id, user.partner_id, user.username, data.statement
+            )
+        except LifecycleError as exc:
+            return error(exc.status_code, exc.detail)
+        return await self._request_response(req)
+
     async def subject_auth_config(
         self, user: PartnerUser = Depends(current_partner_user)
     ) -> SubjectAuthConfig:
@@ -267,6 +306,9 @@ class PartnerPortalController(BaseController):
             consent_by="template" if consent_by_template() else "scopes",
             required_subject_identifiers=_config.subject_required_identifiers,
             subject_auth=await self.subject_auth_config(user),
+            assisted_confirmation=bool(
+                _config.assisted_confirmation_enabled and self.subject_auth.enabled
+            ),
             **lists,
         )
 

@@ -18,6 +18,8 @@ export interface ScopePolicy {
   // ISO-8601 duration (e.g. "P1Y"); null = no limit beyond the default.
   max_validity_duration: string | null;
   policy_version: number;
+  // Consents may be given by assisted confirmation (scenario 0).
+  allow_assisted_confirmation?: boolean;
 }
 
 // What a consent from a template grants from one registry (data_scopes =
@@ -42,6 +44,7 @@ export interface ConsentTemplate {
   allowed_subject_id_types: string[];
   max_validity_duration: string | null;
   allow_partner_consents: boolean;
+  allow_assisted_confirmation?: boolean;
   available?: boolean;
   detail?: string | null;
 }
@@ -166,6 +169,9 @@ export interface RequestSettings {
   consent_by: ConsentBy;
   required_subject_identifiers: string[];
   subject_auth: SubjectAuthConfig;
+  // Assisted confirmation (scenario 0) is on for this install; the partner's
+  // policy or consent template must also allow it.
+  assisted_confirmation?: boolean;
   // null: free text (no list in Master Data, or Master Data unreachable).
   purposes?: CodeList | null;
   subject_id_types?: CodeList | null;
@@ -210,6 +216,17 @@ export interface ConsentGrant extends Grant {
 
 // How the subject's consent was confirmed, e.g.
 // {"method":"assisted","evidence":["signed_form"],"verified_by":"…","verified_at":"…","subject_authenticated":false}
+// Assisted confirmation (scenario 0): the exact statement the person agrees to
+// after the national-ID login, and the consent it makes.
+export interface ConfirmationTerms {
+  statement: string;
+  partner_id: string;
+  purpose: Record<string, unknown>;
+  grants: { data_controller: string; data_scopes: string[] }[];
+  valid_from: string;
+  valid_until: string;
+}
+
 export interface Assurance {
   method?: string;
   evidence?: string[];

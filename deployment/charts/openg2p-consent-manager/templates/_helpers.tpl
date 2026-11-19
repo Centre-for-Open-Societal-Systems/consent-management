@@ -116,6 +116,15 @@ install's manifests are unchanged. Call with the root context.
   value: {{ $sa.idTypes | toJson | quote }}
 - name: CONSENT_MANAGER_SUBJECT_AUTH_PRIVATE_KEY_PATH
   value: {{ printf "%s/client.pem" $sa.keyMountPath | quote }}
+{{- $ac := $p.assistedConfirmation | default dict }}
+{{- if $ac.enabled }}
+- name: CONSENT_MANAGER_ASSISTED_CONFIRMATION_ENABLED
+  value: "true"
+- name: CONSENT_MANAGER_ASSISTED_CONFIRMATION_VALIDITY_DAYS
+  value: {{ $ac.validityDays | default 30 | int | toString | quote }}
+- name: CONSENT_MANAGER_ASSISTED_CONFIRMATION_LOGIN_MAX_AGE_SECONDS
+  value: {{ $ac.loginMaxAgeSeconds | default 600 | int | toString | quote }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- if or $e.enabled $p.enabled }}

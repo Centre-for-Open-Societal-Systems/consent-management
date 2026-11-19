@@ -299,6 +299,20 @@ questions:
   label: Require National-ID Login (eSignet)
   group: Partner portal
   show_if: partnerPortal.enabled=true&&global.agriStackExchange.role!=exchange
+- variable: partnerPortal.assistedConfirmation.enabled
+  description: "Assisted confirmation (consent scenario 0): after the subject's national-ID login, one 'I agree' in the partner portal makes the consent active at once, with no signed form and no Consent Approver. The weakest proof: used only for partners whose Partner Management policy also allows it. Needs the national-ID login."
+  type: boolean
+  default: false
+  label: Allow Assisted Confirmation (no form)
+  group: Partner portal
+  show_if: partnerPortal.enabled=true
+- variable: partnerPortal.assistedConfirmation.validityDays
+  description: "How long a consent given by assisted confirmation lasts, in days (capped by the policy's or consent template's longest validity)."
+  type: int
+  default: 30
+  label: Assisted Confirmation Validity (days)
+  group: Partner portal
+  show_if: partnerPortal.enabled=true&&partnerPortal.assistedConfirmation.enabled=true
 - variable: partnerPortal.requiredSubjectIdentifiers
   description: "Comma-separated identifiers every request must carry besides the subject ID, checked by staff in the registry before approving. Empty = none; for the exchange role, FARMER_ID."
   type: string

@@ -26,6 +26,7 @@ class ScopePolicyView(BaseModel):
     allowed_subject_id_types: List[str]
     max_validity_duration: Optional[str] = None
     policy_version: int
+    allow_assisted_confirmation: bool = False
 
 
 class TemplateGrantView(BaseModel):
@@ -53,6 +54,7 @@ class TemplateAccessView(BaseModel):
     allowed_subject_id_types: List[str] = []
     max_validity_duration: Optional[str] = None
     allow_partner_consents: bool = False
+    allow_assisted_confirmation: bool = False
     available: bool = True
     detail: Optional[str] = None
 
@@ -203,6 +205,9 @@ class RequestSettings(BaseModel):
     consent_by: Literal["template", "scopes"] = "scopes"
     required_subject_identifiers: List[str] = []
     subject_auth: SubjectAuthConfig
+    # Assisted confirmation (scenario 0) is on for this install (it also needs
+    # the partner's policy or template to allow it).
+    assisted_confirmation: bool = False
     purposes: Optional[CodeListOut] = None
     subject_id_types: Optional[CodeListOut] = None
 
@@ -226,6 +231,26 @@ class AssistedRequestResponse(BaseModel):
     verification_note: Optional[str] = None
     consent_id: Optional[str] = None
     subject_authentication: Optional[SubjectAuthSummary] = None
+
+
+class ConfirmationTerms(BaseModel):
+    """What the subject agrees to by assisted confirmation (scenario 0): the
+    exact ``statement`` shown, and the consent it makes. The portal shows the
+    statement and sends it back unchanged with the confirmation."""
+
+    statement: str
+    partner_id: str
+    purpose: Dict[str, Any]
+    grants: List[RequestGrant]
+    valid_from: datetime
+    valid_until: datetime
+
+
+class AssistedConfirm(BaseModel):
+    """The subject agreed (the "I agree" tick): ``statement`` as shown."""
+
+    statement: str = Field(..., min_length=1)
+    agreed: Literal[True]
 
 
 class AssistedRequestDetail(AssistedRequestResponse):

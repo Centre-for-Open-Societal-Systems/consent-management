@@ -150,6 +150,18 @@ class ConsentRecordService(BaseService):
             "evidence": evidence_entries,
             "subject_authenticated": bool(assurance.get("subject_authenticated")),
             "subject_authentication": assurance.get("subject_authentication"),
+            # How the subject agreed: "assisted" (signed form, checked by the
+            # CM) or "assisted_confirmation" (one "I agree" after the login,
+            # with the statement shown; no form, no check).
+            "how_given": assurance.get("method"),
+            **(
+                {"confirmation": {
+                    "statement": assurance.get("statement"),
+                    "statement_sha256": assurance.get("statement_sha256"),
+                    "confirmed_at": assurance.get("confirmed_at"),
+                }}
+                if assurance.get("method") == "assisted_confirmation" else {}
+            ),
             # When the CM checked the evidence; the staff member is in the CM's
             # own audit trail, not in the partner's copy.
             "verified_by": "Consent Manager",
@@ -218,6 +230,12 @@ def _summary(s: dict) -> str:
         f"{', ' + e(str(auth['authenticated_at'])) if auth.get('authenticated_at') else ''}"
         if s["subject_authenticated"] else "No (signed form only)"
     )
+    confirmation = s.get("confirmation")
+    how = (
+        "Assisted confirmation: the person agreed to the statement below after the "
+        "national-ID login (no signed form, no check by the Consent Manager)"
+        if confirmation else "Signed form, checked by the Consent Manager"
+    )
     rows = "".join([
         row("Consent ID", f"<code>{e(s['consent_id'])}</code>"),
         row("Status", e(s["status"])),
@@ -229,6 +247,8 @@ def _summary(s: dict) -> str:
         row("Data", f"<ul>{grants}</ul>"),
         row("Valid", f"{e(s['valid_from'] or '—')} to {e(s['valid_until'] or '—')}"),
         row("Person authenticated", authenticated),
+        row("How given", e(how)),
+        *([row("Statement agreed", e(confirmation.get("statement") or "—"))] if confirmation else []),
         row("Evidence", f"<ul>{evidence}</ul>"),
         row("Verified by the Consent Manager", e(s["verified_at"] or "—")),
         row("Receipt SHA-256", f"<code>{e(s['receipt']['sha256'])}</code>" if s.get("receipt") else "—"),

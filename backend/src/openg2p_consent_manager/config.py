@@ -288,6 +288,21 @@ class Settings(BaseSettings):
     subject_auth_session_ttl_seconds: int = 300
     subject_auth_http_timeout_seconds: float = 10.0
 
+    # ── Assisted confirmation (consent scenario 0) ───────────────────────────
+    # Instead of a signed form and a Consent Approver: after the subject's
+    # national-ID login, the partner portal shows the consent's terms and one
+    # "I agree" tick makes the consent active at once. The weakest proof: off
+    # unless enabled here AND allowed by the partner's policy
+    # (allow_assisted_confirmation: at the Exchange on the use-case policy, read
+    # through the consent template; elsewhere on each scope policy). Needs
+    # subject_auth_enabled. The consent covers every scope requested; its
+    # validity is set here (capped by the policy or template), not by the
+    # partner user.
+    assisted_confirmation_enabled: bool = False
+    assisted_confirmation_validity_days: int = 30
+    # The national-ID login must be this recent when the tick is submitted.
+    assisted_confirmation_login_max_age_seconds: int = 600
+
     # ── Master Data code lists (partner portal choices) ─────────────────────
     # Purposes and subject ID types offered in the partner portal's request
     # form, read from the Master Data Service's staff API

@@ -181,6 +181,20 @@ export default function ConsentDetailPage() {
         </table>
       </div>
 
+      {c.assurance?.method === "assisted_confirmation" && (
+        <div className="card">
+          <h3 className="card-title">How it was given</h3>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Assisted confirmation: after the national-ID login, the person agreed in the partner portal
+            {typeof c.assurance.confirmed_by === "string" ? `, raised by partner user ${c.assurance.confirmed_by}` : ""}.
+            No signed form and no check by Consent Manager staff.
+          </p>
+          {typeof c.assurance.statement === "string" && (
+            <blockquote style={{ margin: 0 }}>{c.assurance.statement}</blockquote>
+          )}
+        </div>
+      )}
+
       {c.consent_request_id && c.evidence.length > 0 && (
         <div className="card">
           <h3 className="card-title">Evidence</h3>

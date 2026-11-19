@@ -5,6 +5,7 @@ verify the evidence and approve (the consent is created) or reject it.
 Every partner call is scoped to the partner (audience) on the user's token: a
 request or consent of another partner is "not found".
 """
+import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -57,6 +58,60 @@ def artefact_status(artefact: ConsentArtefact, now: Optional[datetime] = None) -
     return artefact.status
 
 
+ASSISTED_CONFIRMATION = "assisted_confirmation"
+
+
+def _auth_summary(auth) -> dict:
+    """The national-ID login as recorded on a consent's assurance."""
+    return {
+        "provider": auth.auth_provider,
+        "method": auth.auth_method,
+        "acr": (auth.verified_claims or {}).get("acr"),
+        "authenticated_at": _aware(auth.auth_timestamp).isoformat()
+        if auth.auth_timestamp else None,
+        "auth_context_id": auth.id,
+    }
+
+
+def confirmation_statement(req, grants: list, valid_until: datetime) -> str:
+    """The text the subject agrees to by assisted confirmation; its SHA-256 is
+    kept on the consent. Day precision, so it reads the same when shown and
+    when confirmed."""
+    purpose = (req.purpose or {}).get("code") or "-"
+    data = "; ".join(
+        f"{g['data_controller']}: {', '.join(g['effective_data_scopes'])}" for g in grants
+    )
+    return (
+        f"I agree to share my data with {req.partner_audience or req.partner_id} "
+        f"for the purpose '{purpose}' until {valid_until.date().isoformat()}: {data}."
+    )
+
+
+def _artefact(req, grants, fetch_type, valid_from, valid_until, assurance, ceiling, now):
+    """The consent made from an assisted request."""
+    return ConsentArtefact(
+        subject_id_type=req.subject_id_type,
+        subject_id_value=req.subject_id_value,
+        subject_identifiers=req.subject_identifiers,
+        controller_id=grants[0]["data_controller"] if len(grants) == 1 else None,
+        partner_id=req.partner_audience or req.partner_id,
+        purpose=req.purpose,
+        data_scopes=req.requested_scopes,
+        effective_data_scopes=sorted({s for g in grants for s in g["effective_data_scopes"]}),
+        grants=grants,
+        fetch_type=fetch_type or "oneshot",
+        valid_from=valid_from,
+        valid_until=valid_until,
+        source=ArtefactSource.originated.value,
+        **common_policy_fields(grants),
+        assurance=assurance,
+        consent_request_id=req.id,
+        template=req.template if ceiling is not None else None,
+        status=ArtefactStatus.active.value,
+        created_at=now,
+    )
+
+
 class AssistedConsentService(BaseService):
     def __init__(self, name="", **kwargs):
         super().__init__(name, **kwargs)
@@ -93,6 +148,9 @@ class AssistedConsentService(BaseService):
                     "allowed_subject_id_types": list(policy.allowed_subject_id_types or []),
                     "max_validity_duration": policy.max_validity_duration,
                     "policy_version": policy.version,
+                    "allow_assisted_confirmation": bool(
+                        getattr(policy, "allow_assisted_confirmation", False)
+                    ),
                 }
                 for policy in policies
             ],
@@ -117,6 +175,7 @@ class AssistedConsentService(BaseService):
                 "allowed_subject_id_types": list(template.limits.allowed_subject_id_types),
                 "max_validity_duration": template.limits.max_validity_duration,
                 "allow_partner_consents": template.limits.allow_partner_consents,
+                "allow_assisted_confirmation": template.limits.allow_assisted_confirmation,
             }
             try:
                 self.lifecycle.check_usable(template)
@@ -437,52 +496,7 @@ class AssistedConsentService(BaseService):
             if req.status != RequestStatus.pending_verification.value:
                 raise LifecycleError(409, f"request is '{req.status}'")
 
-            grants, fetch_type, max_validity = [], None, None
-            # A request made from a consent template (exchange role) is
-            # narrowed to the template's scopes as they are now (and needs the
-            # template still offered to the partner), not to scope policies.
-            ceiling = await self.lifecycle.template_ceiling(req)
-            if ceiling is not None:
-                max_validity = self.lifecycle.max_validity(ceiling[0])
-            for rg in req.grants or []:
-                if ceiling is not None:
-                    policy = None
-                    allowed = ceiling[1].get(rg["data_controller"], set())
-                else:
-                    policy = await self.lifecycle.current_policy(
-                        req.partner_audience or req.partner_id, rg["data_controller"]
-                    )
-                    if policy is None:
-                        continue
-                    allowed = set(policy.allowed_data_scopes or [])
-                effective = sorted(set(rg["data_scopes"]) & allowed)
-                if not effective:
-                    continue
-                if policy is not None:
-                    fetch_type = fetch_type or policy.fetch_type
-                    limit = self._max_validity(policy)
-                    if limit is not None:
-                        max_validity = limit if max_validity is None else min(max_validity, limit)
-                grants.append(
-                    {
-                        "data_controller": rg["data_controller"],
-                        "data_scopes": rg["data_scopes"],
-                        "granted_scopes": sorted(rg["data_scopes"]),
-                        "effective_data_scopes": effective,
-                        **(
-                            template_fields(ceiling[0].code) if ceiling is not None
-                            else policy_fields(policy)
-                        ),
-                    }
-                )
-            if not grants:
-                raise LifecycleError(
-                    422,
-                    f"no requested scope is in consent template '{req.template}' now"
-                    if ceiling is not None else
-                    "no requested scope is permitted by the partner's current policy",
-                )
-
+            grants, fetch_type, max_validity, ceiling, _ = await self._effective_grants(req)
             kinds = (
                 await session.execute(
                     select(ConsentEvidence.kind)
@@ -509,42 +523,202 @@ class AssistedConsentService(BaseService):
                 "subject_authenticated": auth is not None,
             }
             if auth is not None:
-                assurance["subject_authentication"] = {
-                    "provider": auth.auth_provider,
-                    "method": auth.auth_method,
-                    "acr": (auth.verified_claims or {}).get("acr"),
-                    "authenticated_at": _aware(auth.auth_timestamp).isoformat()
-                    if auth.auth_timestamp else None,
-                    "auth_context_id": auth.id,
-                }
-            artefact = ConsentArtefact(
-                subject_id_type=req.subject_id_type,
-                subject_id_value=req.subject_id_value,
-                subject_identifiers=req.subject_identifiers,
-                controller_id=grants[0]["data_controller"] if len(grants) == 1 else None,
-                partner_id=req.partner_audience or req.partner_id,
-                purpose=req.purpose,
-                data_scopes=req.requested_scopes,
-                effective_data_scopes=sorted(
-                    {s for g in grants for s in g["effective_data_scopes"]}
-                ),
-                grants=grants,
-                fetch_type=fetch_type or "oneshot",
-                valid_from=valid_from,
-                valid_until=valid_until,
-                source=ArtefactSource.originated.value,
-                **common_policy_fields(grants),
-                assurance=assurance,
-                consent_request_id=req.id,
-                template=req.template if ceiling is not None else None,
-                status=ArtefactStatus.active.value,
-                created_at=now,
+                assurance["subject_authentication"] = _auth_summary(auth)
+            artefact = _artefact(
+                req, grants, fetch_type, valid_from, valid_until, assurance, ceiling, now
             )
             receipt = self.receipts.build_receipt(artefact)
             req.status = RequestStatus.approved.value
             req.verified_by = verified_by
             req.verified_at = now
             req.verification_note = note
+            session.add(artefact)
+            session.add(receipt)
+            await session.commit()
+            await session.refresh(req)
+            await session.refresh(artefact)
+            return req, artefact
+
+    async def _effective_grants(self, req):
+        """The request's grants narrowed to what the partner may have now:
+        ``(grants, fetch_type, max_validity, ceiling, policies)`` (``policies``:
+        each grant's scope policy, None from a template). A request made from a
+        consent template (exchange role) is narrowed to the template's scopes
+        as they are now (``ceiling``: (template, {controller: scopes}), and the
+        template must still be offered to the partner), else to the partner's
+        scope policies (``ceiling`` None). A grant left with no scope is
+        dropped; none left is LifecycleError(422)."""
+        grants, fetch_type, max_validity = [], None, None
+        ceiling = await self.lifecycle.template_ceiling(req)
+        if ceiling is not None:
+            max_validity = self.lifecycle.max_validity(ceiling[0])
+        for rg in req.grants or []:
+            if ceiling is not None:
+                policy = None
+                allowed = ceiling[1].get(rg["data_controller"], set())
+            else:
+                policy = await self.lifecycle.current_policy(
+                    req.partner_audience or req.partner_id, rg["data_controller"]
+                )
+                if policy is None:
+                    continue
+                allowed = set(policy.allowed_data_scopes or [])
+            effective = sorted(set(rg["data_scopes"]) & allowed)
+            if not effective:
+                continue
+            if policy is not None:
+                fetch_type = fetch_type or policy.fetch_type
+                limit = self._max_validity(policy)
+                if limit is not None:
+                    max_validity = limit if max_validity is None else min(max_validity, limit)
+            grants.append(
+                {
+                    "data_controller": rg["data_controller"],
+                    "data_scopes": rg["data_scopes"],
+                    "granted_scopes": sorted(rg["data_scopes"]),
+                    "effective_data_scopes": effective,
+                    "_policy": policy,
+                    **(
+                        template_fields(ceiling[0].code) if ceiling is not None
+                        else policy_fields(policy)
+                    ),
+                }
+            )
+        if not grants:
+            raise LifecycleError(
+                422,
+                f"no requested scope is in consent template '{req.template}' now"
+                if ceiling is not None else
+                "no requested scope is permitted by the partner's current policy",
+            )
+        policies = [g.pop("_policy") for g in grants]
+        return grants, fetch_type, max_validity, ceiling, policies
+
+    # ── Assisted confirmation (consent scenario 0) ───────────────────────────
+
+    async def _confirmation_terms(self, req, now: datetime):
+        """The consent an assisted confirmation of ``req`` makes, after checking
+        it is allowed: on for the install (with national-ID login), and allowed
+        by the consent template (exchange role) or by the scope policy of every
+        registry. Every requested scope must be granted: no scope is dropped.
+        The validity is the install's default, capped by the template's or the
+        policies' longest and by a shorter one on the request.
+        Returns (grants, fetch_type, valid_from, valid_until, ceiling, statement)."""
+        if not _config.assisted_confirmation_enabled:
+            raise LifecycleError(403, "assisted confirmation is not enabled")
+        if not self.subject_auth.enabled:
+            raise LifecycleError(
+                409, "assisted confirmation needs national-ID authentication of the subject, "
+                "which is not enabled"
+            )
+        grants, fetch_type, max_validity, ceiling, policies = await self._effective_grants(req)
+        if ceiling is not None:
+            allowed = ceiling[0].limits.allow_assisted_confirmation
+        else:
+            allowed = all(
+                getattr(p, "allow_assisted_confirmation", False) for p in policies
+            )
+        if not allowed:
+            raise LifecycleError(
+                403,
+                "the partner's policy does not allow assisted confirmation"
+                + (f" for consent template '{req.template}'" if ceiling is not None else ""),
+            )
+        requested = {g["data_controller"]: set(g["data_scopes"]) for g in req.grants or []}
+        if any(set(g["effective_data_scopes"]) != requested.get(g["data_controller"])
+               for g in grants) or len(grants) != len(requested):
+            raise LifecycleError(
+                422, "not every requested scope is allowed now: raise a new request"
+            )
+        valid_from = now
+        duration = timedelta(days=_config.assisted_confirmation_validity_days)
+        if max_validity is not None:
+            duration = min(duration, max_validity)
+        valid_until = valid_from + duration
+        if req.valid_until is not None:
+            valid_until = min(valid_until, _aware(req.valid_until))
+        if valid_until <= now:
+            raise LifecycleError(409, "the requested validity has already ended")
+        return (
+            grants, fetch_type, valid_from, valid_until, ceiling,
+            confirmation_statement(req, grants, valid_until),
+        )
+
+    async def confirmation(self, request_id: str, audience: str) -> dict:
+        """The terms of an assisted confirmation of a ``pending`` request: the
+        exact statement the subject agrees to, and the consent it makes."""
+        req = await self.get_request(request_id, audience)
+        if req is None:
+            raise LifecycleError(404, "not_found")
+        if req.status != RequestStatus.pending.value:
+            raise LifecycleError(409, f"request is '{req.status}'")
+        now = datetime.now(timezone.utc)
+        grants, _, valid_from, valid_until, _, statement = await self._confirmation_terms(
+            req, now
+        )
+        return {
+            "statement": statement,
+            "partner_id": req.partner_audience or req.partner_id,
+            "purpose": req.purpose or {},
+            "grants": [
+                {"data_controller": g["data_controller"],
+                 "data_scopes": g["effective_data_scopes"]}
+                for g in grants
+            ],
+            "valid_from": valid_from,
+            "valid_until": valid_until,
+        }
+
+    async def confirm(
+        self, request_id: str, audience: str, username: str, statement: str,
+    ) -> tuple[ConsentRequest, ConsentArtefact]:
+        """Assisted confirmation (scenario 0): the subject, authenticated with
+        national ID moments ago, agreed to ``statement`` (the "I agree" tick).
+        The consent is active at once; no signed form, no Consent Approver.
+        The assurance records the login, the partner user and the statement."""
+        async with async_session()() as session:
+            req = await session.get(ConsentRequest, request_id, with_for_update=True)
+            if not self._visible(req, audience):
+                raise LifecycleError(404, "not_found")
+            if req.status != RequestStatus.pending.value:
+                raise LifecycleError(409, f"request is '{req.status}'")
+            now = datetime.now(timezone.utc)
+            grants, fetch_type, valid_from, valid_until, ceiling, expected = (
+                await self._confirmation_terms(req, now)
+            )
+            if statement.strip() != expected:
+                raise LifecycleError(
+                    409, "the terms have changed since they were shown: show them again"
+                )
+            auth = await self.subject_auth.authenticated(session, request_id)
+            if auth is None:
+                raise LifecycleError(
+                    409, "the subject must authenticate with national ID first"
+                )
+            at = _aware(auth.auth_timestamp or auth.created_at)
+            max_age = timedelta(seconds=_config.assisted_confirmation_login_max_age_seconds)
+            if now - at > max_age:
+                raise LifecycleError(
+                    409, "the subject's national-ID login is too old: authenticate again"
+                )
+            assurance = {
+                "method": ASSISTED_CONFIRMATION,
+                "evidence": [],
+                "confirmed_by": username,
+                "confirmed_at": now.isoformat(),
+                "statement": expected,
+                "statement_sha256": hashlib.sha256(expected.encode("utf-8")).hexdigest(),
+                "subject_authenticated": True,
+                "subject_authentication": _auth_summary(auth),
+            }
+            artefact = _artefact(
+                req, grants, fetch_type, valid_from, valid_until, assurance, ceiling, now
+            )
+            receipt = self.receipts.build_receipt(artefact)
+            req.status = RequestStatus.approved.value
+            req.submitted_at = now
+            req.verified_at = now
+            req.verification_note = f"Assisted confirmation, by partner user {username}"
             session.add(artefact)
             session.add(receipt)
             await session.commit()
@@ -652,4 +826,7 @@ class AssistedConsentService(BaseService):
             return None
 
 
-__all__ = ["AssistedConsentService", "EvidenceError", "artefact_status"]
+__all__ = [
+    "ASSISTED_CONFIRMATION", "AssistedConsentService", "EvidenceError", "artefact_status",
+    "confirmation_statement",
+]

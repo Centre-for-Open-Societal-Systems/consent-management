@@ -13,7 +13,8 @@ endpoint) lists only the templates offered to that partner:
     {"templates": [{"code", "title", "description", "purpose",
                     "scopes": {controller: {"required": [...], "optional": [...]}},
                     "limits": {"allowed_subject_id_types", "max_validity_duration",
-                               "allow_partner_consents"}}]}
+                               "allow_partner_consents",
+                               "allow_assisted_confirmation"}}]}
 
 (one template for ``/{code}``: the object itself, or ``{"templates": [it]}``).
 404 = none offered. Answers are reused per (partner, code | list) for
@@ -65,6 +66,8 @@ class TemplateLimits:
     allowed_subject_id_types: list = field(default_factory=list)
     max_validity_duration: Optional[str] = None
     allow_partner_consents: bool = False
+    # A consent may be made by assisted confirmation (scenario 0).
+    allow_assisted_confirmation: bool = False
 
     @classmethod
     def from_source(cls, data) -> "TemplateLimits":
@@ -75,6 +78,7 @@ class TemplateLimits:
             ],
             max_validity_duration=data.get("max_validity_duration") or None,
             allow_partner_consents=data.get("allow_partner_consents") is True,
+            allow_assisted_confirmation=data.get("allow_assisted_confirmation") is True,
         )
 
 

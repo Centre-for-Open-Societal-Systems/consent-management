@@ -402,6 +402,18 @@ partnerPortal:
   # for credentials. When on it is MANDATORY: a request cannot be submitted
   # until its subject has authenticated (the signed form is still required).
   # Needs eSignet (and, for testing, the mock identity system) in the namespace.
+  # Assisted confirmation (consent scenario 0): instead of a signed form and a
+  # Consent Approver, after the subject's national-ID login one "I agree" in
+  # the partner portal makes the consent active at once. The weakest proof:
+  # used only where the partner's policy also allows it
+  # (allow_assisted_confirmation in Partner Management; at the Exchange on the
+  # use-case policy). Needs subjectAuth (the national-ID login) on. The consent
+  # covers every scope requested, for validityDays (capped by the policy's
+  # longest validity); the login must be at most loginMaxAgeSeconds old.
+  assistedConfirmation:
+    enabled: false
+    validityDays: 30
+    loginMaxAgeSeconds: 600
   subjectAuth:
     enabled: false
     providerName: National ID (eSignet)

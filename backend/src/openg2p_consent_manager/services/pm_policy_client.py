@@ -80,6 +80,9 @@ class PmPolicy:
     # The partner may present a consent it collected and signed itself
     # (consent_jws). Default false: only consents the CM holds are accepted.
     allow_partner_consents: bool = False
+    # The partner may collect consents by assisted confirmation in the partner
+    # portal (scenario 0: national-ID login, then one "I agree" tick).
+    allow_assisted_confirmation: bool = False
 
     @property
     def ref(self) -> str:
@@ -109,6 +112,7 @@ class PmPolicy:
             ),
             id=str(data["id"]) if data.get("id") else None,
             allow_partner_consents=data.get("allow_partner_consents") is True,
+            allow_assisted_confirmation=data.get("allow_assisted_confirmation") is True,
         )
 
 

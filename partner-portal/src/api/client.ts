@@ -7,6 +7,7 @@ import type {
   Consent,
   ConsentRequest,
   ConsentRequestCreate,
+  ConfirmationTerms,
   Evidence,
   Me,
   Page,
@@ -137,6 +138,14 @@ export const api = {
     request<ConsentRequest>(`${P}/consent-requests/${encodeURIComponent(id)}/submit`, { method: "POST" }),
   cancelRequest: (id: string) =>
     request<ConsentRequest>(`${P}/consent-requests/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
+  // Assisted confirmation (scenario 0): the terms to show, then the person's "I agree".
+  getConfirmation: (id: string) =>
+    request<ConfirmationTerms>(`${P}/consent-requests/${encodeURIComponent(id)}/confirmation`),
+  confirmRequest: (id: string, statement: string) =>
+    request<ConsentRequest>(`${P}/consent-requests/${encodeURIComponent(id)}/confirm`, {
+      method: "POST",
+      body: JSON.stringify({ statement, agreed: true }),
+    }),
 
   // ── The subject's national-ID login (eSignet) ─────────────────────
   subjectAuthConfig: () => request<SubjectAuthConfig>(`${P}/subject-auth`),

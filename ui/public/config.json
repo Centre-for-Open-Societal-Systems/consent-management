@@ -6,5 +6,6 @@
     "clientId": "consent-manager-ui"
   },
   "adminRole": "CONSENT_MANAGER_ADMIN",
-  "approverRole": "CONSENT_MANAGER_APPROVER"
+  "approverRole": "CONSENT_MANAGER_APPROVER",
+  "partnerManagementUiUrl": ""
 }

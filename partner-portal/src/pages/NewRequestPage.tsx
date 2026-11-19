@@ -1,47 +1,35 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, compositeUrl } from "../api/client";
-import { useBindings, useRequestSettings, useUseCases } from "../api/hooks";
-import type { Binding, ConsentRequestCreate, UseCase } from "../api/types";
-import { CheckboxGroup } from "../components/FormControls";
+import { api, ApiError } from "../api/client";
+import { useAccess, useRequestSettings } from "../api/hooks";
+import type { ConsentRequestCreate, ScopePolicy } from "../api/types";
+import { CheckboxGroup, CodeSelect, codeLabels } from "../components/FormControls";
 import { ErrorNotice } from "../components/Status";
+import TemplateRequestForm from "../components/TemplateRequestForm";
+import { dayEnd, dayStart, today } from "../format";
 
-// The ID types a partner user can enter in Phase 1; types allowed by the
-// partner's policies are added to these.
+// The ID types a partner user can enter when Master Data has no list of
+// subject ID types; types allowed by the partner's policies are added to these.
 const BASE_ID_TYPES = ["FAYDA_FAN", "FARMER_ID"];
 
-// Scopes per registry, prefilled from a use case: required + optional.
-function scopesFromUseCase(u: UseCase): Record<string, string[]> {
-  const out: Record<string, string[]> = {};
-  for (const [controller, s] of Object.entries(u.consent_scopes ?? {})) {
-    out[controller] = [...new Set([...(s.required ?? []), ...(s.optional ?? [])])];
-  }
-  return out;
-}
-
-// A date input (yyyy-mm-dd) as an ISO timestamp at the start / end of that local day.
-function dayStart(d: string): string {
-  return new Date(`${d}T00:00:00`).toISOString();
-}
-function dayEnd(d: string): string {
-  return new Date(`${d}T23:59:59`).toISOString();
-}
-function today(): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
+// At the Exchange (consent_by "template") a request names a consent template
+// offered to the partner; elsewhere it names registries and data within the
+// scope policies.
 export default function NewRequestPage() {
+  const settings = useRequestSettings();
+  if (settings.isLoading) return <div className="loading">Loading…</div>;
+  if (settings.error) return <ErrorNotice error={settings.error} what="the request settings" />;
+  if (settings.data?.consent_by === "template") return <TemplateRequestForm />;
+  return <ScopeRequestForm />;
+}
+
+function ScopeRequestForm() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [params] = useSearchParams();
-  const useCaseRef = params.get("use_case") ?? "";
 
-  const bindings = useBindings();
-  const useCases = useUseCases(!!useCaseRef && !!compositeUrl());
-  const useCase = useCases.data?.find((u) => u.use_case === useCaseRef);
+  const access = useAccess();
 
   const [idType, setIdType] = useState("FAYDA_FAN");
   const [idValue, setIdValue] = useState("");
@@ -53,23 +41,10 @@ export default function NewRequestPage() {
   const [scopes, setScopes] = useState<Record<string, string[]>>({});
   const [validFrom, setValidFrom] = useState("");
   const [validUntil, setValidUntil] = useState("");
-  const [useCaseLabel, setUseCaseLabel] = useState(useCaseRef);
-  const [prefilledFrom, setPrefilledFrom] = useState<string | null>(null);
+  const [templateLabel, setTemplateLabel] = useState(params.get("template") ?? "");
   const [touched, setTouched] = useState(false);
 
-  // Prefill once from the use case: grants = required + optional scopes per
-  // registry, purpose = the use case's purpose, use_case = its ref.
-  useEffect(() => {
-    if (!useCase || prefilledFrom === useCase.use_case) return;
-    setScopes(scopesFromUseCase(useCase));
-    if (useCase.purpose) setPurpose(useCase.purpose);
-    setUseCaseLabel(useCase.use_case);
-    const idTypes = useCase.input?.subject?.id_types ?? [];
-    if (idTypes.length) setIdType(idTypes[0]);
-    setPrefilledFrom(useCase.use_case);
-  }, [useCase, prefilledFrom]);
-
-  const list: Binding[] = useMemo(() => bindings.data ?? [], [bindings.data]);
+  const list: ScopePolicy[] = useMemo(() => access.data?.scope_policies ?? [], [access.data]);
   const byController = useMemo(
     () => Object.fromEntries(list.map((b) => [b.data_controller, b])),
     [list]
@@ -77,29 +52,44 @@ export default function NewRequestPage() {
   const selected = Object.entries(scopes)
     .filter(([, s]) => s.length > 0)
     .map(([c]) => c);
-  // Registries the use case needs that this partner has no policy for.
+  // Registries asked for that this partner has no policy for.
   const unbound = Object.keys(scopes).filter((c) => !byController[c] && scopes[c].length > 0);
 
+  // Master Data code lists (null: free text).
+  const mdsIdTypes = settings.data?.subject_id_types ?? null;
+  const mdsPurposes = settings.data?.purposes ?? null;
+  const idTypeLabels = useMemo(() => codeLabels(mdsIdTypes), [mdsIdTypes]);
+  const purposeLabels = useMemo(() => codeLabels(mdsPurposes), [mdsPurposes]);
+
   const idTypeOptions = useMemo(() => {
+    if (mdsIdTypes) return mdsIdTypes.values.map((v) => v.code);
     const s = new Set(BASE_ID_TYPES);
     list.forEach((b) => b.allowed_subject_id_types.forEach((t) => s.add(t)));
-    s.add(idType);
     return [...s];
-  }, [list, idType]);
+  }, [list, mdsIdTypes]);
 
+  // The purposes the chosen registries' policies allow; a policy that allows
+  // any purpose (empty list) offers the Master Data list, else free text.
+  const selectedKey = selected.join(",");
   const purposeOptions = useMemo(() => {
-    const from = selected.length ? selected.map((c) => byController[c]).filter(Boolean) : list;
+    const chosen = selectedKey ? selectedKey.split(",") : [];
+    const from = chosen.length ? chosen.map((c) => byController[c]).filter(Boolean) : list;
+    if (from.some((b) => b.allowed_purposes.length === 0))
+      return mdsPurposes ? mdsPurposes.values.map((v) => v.code) : null;
     const s = new Set<string>();
     from.forEach((b) => b.allowed_purposes.forEach((p) => s.add(p)));
-    if (purpose) s.add(purpose);
     return [...s].sort();
-  }, [selected, byController, list, purpose]);
+  }, [selectedKey, byController, list, mdsPurposes]);
 
   // ── Validation (the API checks again against the policies) ──────────
   const problems: string[] = [];
   if (!idValue.trim()) problems.push("Enter the subject's ID.");
   for (const t of requiredIds) if (!(extraIds[t] ?? "").trim()) problems.push(`Enter the subject's ${t}.`);
-  if (!purpose) problems.push("Choose a purpose.");
+  if (!purpose.trim()) problems.push("Choose a purpose.");
+  if (mdsIdTypes && !idTypeOptions.includes(idType))
+    problems.push(`Subject ID type ${idType} is not in Master Data list ${mdsIdTypes.list_code}.`);
+  if (mdsPurposes && purpose && !mdsPurposes.values.some((v) => v.code === purpose))
+    problems.push(`Purpose "${purpose}" is not in Master Data list ${mdsPurposes.list_code}.`);
   if (selected.length === 0) problems.push("Choose the data to request from at least one registry.");
   if (unbound.length)
     problems.push(`Your organisation has no policy for: ${unbound.join(", ")}. Remove those registries.`);
@@ -108,7 +98,7 @@ export default function NewRequestPage() {
     if (!b) continue;
     const bad = scopes[c].filter((s) => !b.allowed_data_scopes.includes(s));
     if (bad.length) problems.push(`${c}: you may not ask for ${bad.join(", ")} — untick them.`);
-    if (purpose && !b.allowed_purposes.includes(purpose))
+    if (purpose && b.allowed_purposes.length && !b.allowed_purposes.includes(purpose))
       problems.push(`${c}: purpose "${purpose}" is not allowed for this registry.`);
     if (b.allowed_subject_id_types.length && !b.allowed_subject_id_types.includes(idType))
       problems.push(`${c}: subject ID type ${idType} is not accepted by this registry.`);
@@ -122,7 +112,7 @@ export default function NewRequestPage() {
       const body: ConsentRequestCreate = {
         subject_id: { type: idType, value: idValue.trim() },
         subject_identifiers: requiredIds.map((t) => ({ type: t, value: (extraIds[t] ?? "").trim() })),
-        purpose: { code: purpose },
+        purpose: { code: purpose.trim() },
         grants: selected.map((c) => ({ data_controller: c, data_scopes: scopes[c] })),
       };
       if (validFrom || validUntil) {
@@ -130,7 +120,7 @@ export default function NewRequestPage() {
         if (validFrom) body.validity.valid_from = dayStart(validFrom);
         if (validUntil) body.validity.valid_until = dayEnd(validUntil);
       }
-      if (useCaseLabel.trim()) body.use_case = useCaseLabel.trim();
+      if (templateLabel.trim()) body.template = templateLabel.trim();
       return api.createRequest(body);
     },
     onSuccess: (r) => {
@@ -148,9 +138,9 @@ export default function NewRequestPage() {
   return (
     <div>
       <div className="spread">
-        <h1 style={{ margin: 0 }}>New consent request</h1>
-        <Link to="/requests" className="btn-secondary">
-          Back to requests
+        <h1 style={{ margin: 0 }}>New consent</h1>
+        <Link to="/consents" className="btn-secondary">
+          Back to consents
         </Link>
       </div>
       <p className="muted page-intro">
@@ -158,43 +148,22 @@ export default function NewRequestPage() {
         signed and submit the request for verification.
       </p>
 
-      {useCaseRef && useCases.isLoading && <div className="loading">Loading the use case…</div>}
-      {useCaseRef && useCases.error && <ErrorNotice error={useCases.error} what="the use case" />}
-      {useCaseRef && useCases.data && !useCase && (
-        <div className="notice notice-error">
-          Use case <code className="mono">{useCaseRef}</code> is not published.
-        </div>
-      )}
-      {useCase && (
-        <div className="notice notice-info">
-          Prefilled from use case <strong>{useCase.title || useCase.name}</strong> (
-          <code className="mono">{useCase.use_case}</code>): all its required and optional data.
-          Untick optional data the subject does not agree to share.
-        </div>
-      )}
-
-      {bindings.isLoading && <div className="loading">Loading your policies…</div>}
-      {bindings.error && <ErrorNotice error={bindings.error} what="your policies" />}
-      {bindings.data && list.length === 0 && (
+      {access.isLoading && <div className="loading">Loading your policies…</div>}
+      {access.error && <ErrorNotice error={access.error} what="your policies" />}
+      {access.data && list.length === 0 && (
         <div className="card">
           Your organisation has no active data-share policy, so it cannot request consent yet.
         </div>
       )}
 
-      {bindings.data && list.length > 0 && (
+      {access.data && list.length > 0 && (
         <form onSubmit={onSubmit}>
           <div className="card">
             <h3 className="card-title">Subject</h3>
             <div className="grid-2">
               <div className="field">
                 <label htmlFor="id-type">ID type</label>
-                <select id="id-type" value={idType} onChange={(e) => setIdType(e.target.value)}>
-                  {idTypeOptions.map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ))}
-                </select>
+                <CodeSelect id="id-type" value={idType} onChange={setIdType} options={idTypeOptions} labels={idTypeLabels} />
               </div>
               <div className="field">
                 <label htmlFor="id-value">ID number</label>
@@ -231,22 +200,23 @@ export default function NewRequestPage() {
             <div className="grid-2">
               <div className="field">
                 <label htmlFor="purpose">Purpose</label>
-                <select id="purpose" value={purpose} onChange={(e) => setPurpose(e.target.value)}>
-                  <option value="">Choose…</option>
-                  {purposeOptions.map((p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </select>
+                <CodeSelect
+                  id="purpose"
+                  value={purpose}
+                  onChange={setPurpose}
+                  options={purposeOptions}
+                  labels={purposeLabels}
+                  placeholder="e.g. credit-assessment"
+                  choose
+                />
               </div>
               <div className="field">
-                <label htmlFor="use-case">Use case (optional)</label>
+                <label htmlFor="template">Consent template (optional)</label>
                 <input
-                  id="use-case"
+                  id="template"
                   type="text"
-                  value={useCaseLabel}
-                  onChange={(e) => setUseCaseLabel(e.target.value)}
+                  value={templateLabel}
+                  onChange={(e) => setTemplateLabel(e.target.value)}
                   placeholder="e.g. loan-profile@1"
                 />
                 <div className="hint">A label shown with the request; the data asked for is below.</div>
@@ -347,7 +317,7 @@ export default function NewRequestPage() {
           )}
 
           <div className="actions">
-            <Link to="/requests" className="btn-secondary">
+            <Link to="/consents" className="btn-secondary">
               Cancel
             </Link>
             <button type="submit" className="btn-primary" disabled={create.isPending}>

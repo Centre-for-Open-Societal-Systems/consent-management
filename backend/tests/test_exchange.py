@@ -73,22 +73,24 @@ def post(call, payload):
 
 
 @pytest.fixture
-def bank(call, new_partner):
-    """A partner bound at the exchange to FR and CSR (full scopes)."""
+def bank(pm, new_partner):
+    """A partner with scope policies for FR and CSR (full scopes) in the
+    exchange's Partner Management."""
     p = new_partner()
-    bind(call, p, FR, FR_SCOPES)
-    bind(call, p, CSR, CSR_SCOPES)
+    bind(pm, p, FR, FR_SCOPES)
+    bind(pm, p, CSR, CSR_SCOPES)
     return p
 
 
 @pytest.fixture(scope="session")
-def presenter_binding(env, call):
-    """The department's standing policy for the exchange presenter at FR: only
+def presenter_binding(env, pm_store):
+    """The department's standing ceiling for the exchange presenter at FR: its
+    scope policy in the department's Partner Management — only
     farmer_personal_details (narrower than the exchange grant)."""
     from conftest import Partner
 
     presenter = Partner(env, audience=PRESENTER)
-    bind(call, presenter, FR, ["farmer_personal_details"])
+    bind(pm_store, presenter, FR, ["farmer_personal_details"])
     return presenter
 
 
@@ -127,7 +129,7 @@ def test_receipt_claims_and_signature(call, cfg, bank):
     receipt = body["receipts"][FR]
     header = _b64json(receipt.split(".")[0])
     crypto = CryptoService.get_component()
-    assert header == {"alg": crypto.algorithm, "kid": crypto.kid, "typ": "consent-receipt+jwt"}
+    assert header == {"alg": crypto.algorithm, "kid": crypto.kid, "typ": "consent-token+jwt"}
 
     _, jwks = call("GET", "/.well-known/jwks.json")
     key = jwt.PyJWK(jwks["keys"][0])
@@ -144,8 +146,8 @@ def test_receipt_claims_and_signature(call, cfg, bank):
     assert claims["consent_id"]
     uuid.UUID(claims["jti"])
     assert before <= claims["iat"] == claims["nbf"]
-    # exp = min(consent expiry (30 days), now + 900 s).
-    assert claims["exp"] - claims["iat"] == 900
+    # exp = min(consent expiry (30 days), now + 300 s).
+    assert claims["exp"] - claims["iat"] == 300
     assert claims["consent_exp"] > claims["exp"]
     datetime.fromisoformat(claims["consent_issued_at"])
     # consent_id is this CM's artefact for that controller.
@@ -182,10 +184,10 @@ def test_issue_receipts_refused_when_not_configured(call, cfg, bank):
     assert "not enabled" in body["detail"]
 
 
-def test_deny_issues_no_receipts(call, cfg, new_partner):
+def test_deny_issues_no_receipts(call, cfg, pm, new_partner):
     exchange_on(cfg)
     p = new_partner()
-    bind(call, p, FR, FR_SCOPES)  # not bound to CSR
+    bind(pm, p, FR, FR_SCOPES)  # no CSR policy
     body = post(call, {"consent_jws": p.sign(p.claims(grants=GRANTS)),
                        "partner_id": PRESENTER, "issue_receipts": True})
     assert body["decision"] == "deny"
@@ -326,7 +328,7 @@ def test_wrong_presenter_is_denied(call, run, cfg, bank, presenter_binding):
     assert present(call, receipt)["reason_code"] == "presenter_mismatch"
 
 
-def _sign_receipt(**overrides):
+def _sign_receipt(typ="consent-token+jwt", **overrides):
     from openg2p_consent_manager.services import CryptoService
 
     now = int(datetime.now(timezone.utc).timestamp())
@@ -339,7 +341,7 @@ def _sign_receipt(**overrides):
         "consent_exp": now + 86400, "iat": now, "nbf": now, "exp": now + 900,
     }
     claims.update(overrides)
-    return CryptoService.get_component().sign_jws(claims, "consent-receipt+jwt")
+    return CryptoService.get_component().sign_jws(claims, typ)
 
 
 def test_expired_receipt_is_denied(call, cfg, presenter_binding):
@@ -353,6 +355,7 @@ def test_expired_receipt_is_denied(call, cfg, presenter_binding):
 def test_revoked_receipt_is_denied(call, cfg, bank, presenter_binding):
     exchange_on(cfg)
     department_on(cfg)
+    cfg(receipt_status_check="always")  # optional; off by default
     receipt = issue(call, bank)["receipts"][FR]
     consent_id = _b64json(receipt.split(".")[1])["consent_id"]
     call("POST", f"/consent/v1/consents/{consent_id}/revoke", json={})
@@ -363,6 +366,7 @@ def test_revoked_receipt_is_denied(call, cfg, bank, presenter_binding):
 
 def test_status_check_never_skips_the_issuer(call, cfg, presenter_binding):
     department_on(cfg)
+    cfg(receipt_status_check="always")
     receipt = _sign_receipt()  # not recorded at the issuer → status "unknown"
     assert present(call, receipt)["reason_code"] == "receipt_invalid"
     cfg(receipt_status_check="never")
@@ -372,6 +376,7 @@ def test_status_check_never_skips_the_issuer(call, cfg, presenter_binding):
 def test_status_unreachable_fails_closed(call, cfg, presenter_binding):
     # The status URL answers 405 (GET on a POST route): not a status → deny.
     department_on(cfg, status_url="http://cm/consent/v1/validate?jti={jti}")
+    cfg(receipt_status_check="always")
     assert present(call, _sign_receipt())["reason_code"] == "receipt_status_unavailable"
 
 
@@ -397,7 +402,7 @@ def test_forged_receipt_is_denied(call, cfg, presenter_binding):
     forged = PyJWS().encode(
         json.dumps(claims).encode(), ed25519.Ed25519PrivateKey.generate(),
         algorithm="EdDSA",
-        headers={"kid": CryptoService.get_component().kid, "typ": "consent-receipt+jwt"},
+        headers={"kid": CryptoService.get_component().kid, "typ": "consent-token+jwt"},
     )
     assert present(call, forged)["reason_code"] == "receipt_invalid"
 
@@ -432,3 +437,14 @@ def test_no_issuers_configured_receipt_denied_and_consents_unchanged(call, cfg, 
     body = post(call, {"consent_jws": jws, "data_controller": FR, "partner_id": bank.audience})
     assert body["decision"] == "permit"
     assert body["effective_data_scopes"] == sorted(FR_SCOPES)
+
+
+def test_legacy_token_typ_still_accepted(call, cfg, presenter_binding):
+    """A token issued by an older Exchange CM (typ consent-receipt+jwt) is still
+    checked as a consent token, so the Exchange and departments can upgrade one
+    at a time."""
+    department_on(cfg)
+    new = present(call, _sign_receipt())
+    old = present(call, _sign_receipt(typ="consent-receipt+jwt"))
+    assert new["decision"] == "permit", new
+    assert old["decision"] == "permit", old

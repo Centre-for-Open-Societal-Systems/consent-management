@@ -1,12 +1,70 @@
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
-import { CONSENT_STATUSES } from "../api/types";
+import { CONSENT_STATUSES, type ConsentRequest } from "../api/types";
 import Pagination from "../components/Pagination";
 import { ErrorNotice, StatusBadge } from "../components/Status";
-import { formatDate, purposeLabel, statusLabel } from "../format";
+import { formatDate, formatDateTime, purposeLabel, statusLabel } from "../format";
 
 const LIMIT = 25;
+// Requests not yet decided: being prepared by the partner's staff, or waiting
+// for Consent Manager staff. Closed ones are in History.
+const OPEN_STATUSES = ["pending", "pending_verification"] as const;
+
+function InProgress() {
+  const navigate = useNavigate();
+  const { data, error } = useQuery({
+    queryKey: ["requests", "open"],
+    queryFn: async () => {
+      const pages = await Promise.all(
+        OPEN_STATUSES.map((status) => api.listRequests({ status, limit: 200 })),
+      );
+      return pages
+        .flatMap((p) => p.items)
+        .sort((a, b) => b.created_at.localeCompare(a.created_at)) as ConsentRequest[];
+    },
+  });
+
+  if (error) return <ErrorNotice error={error} what="requests in progress" />;
+  if (!data || data.length === 0) return null;
+  return (
+    <>
+      <h2>In progress</h2>
+      <table className="data">
+        <thead>
+          <tr>
+            <th>Started</th>
+            <th>Subject</th>
+            <th>Purpose</th>
+            <th>Started by</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((r) => (
+            <tr key={r.id} className="clickable" onClick={() => navigate(`/requests/${r.id}`)}>
+              <td className="muted">
+                <Link to={`/requests/${r.id}`}>{formatDateTime(r.created_at)}</Link>
+              </td>
+              <td>
+                <code className="mono">{r.subject_id?.type}</code> {r.subject_id?.value}
+              </td>
+              <td>
+                {purposeLabel(r.purpose)}
+                {r.template && <div className="muted" style={{ fontSize: 12 }}>{r.template}</div>}
+              </td>
+              <td className="muted">{r.created_by ?? "—"}</td>
+              <td>
+                <StatusBadge status={r.status} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <h2>Consents</h2>
+    </>
+  );
+}
 
 export default function ConsentsPage() {
   const navigate = useNavigate();
@@ -45,12 +103,18 @@ export default function ConsentsPage() {
               </option>
             ))}
           </select>
+          <Link to="/consents/new" className="btn-primary">
+            New consent
+          </Link>
         </div>
       </div>
       <p className="muted page-intro">
-        Consents your organisation obtained. Present a consent's ID in your queries; a subject can
-        revoke a consent at any time.
+        Acquire a subject's consent with <strong>New consent</strong>; Consent Manager staff check
+        it before it becomes active. Requests not yet decided are listed first; every request ever
+        raised is in History.
       </p>
+
+      <InProgress />
 
       {isLoading && <div className="loading">Loading…</div>}
       {error && <ErrorNotice error={error} what="consents" />}
@@ -90,7 +154,7 @@ export default function ConsentsPage() {
                   </td>
                   <td>
                     {purposeLabel(c.purpose)}
-                    {c.use_case && <div className="muted" style={{ fontSize: 12 }}>{c.use_case}</div>}
+                    {c.template && <div className="muted" style={{ fontSize: 12 }}>{c.template}</div>}
                   </td>
                   <td className="muted">{c.grants.map((g) => g.data_controller).join(", ")}</td>
                   <td className="muted">{formatDate(c.valid_until)}</td>

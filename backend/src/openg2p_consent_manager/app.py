@@ -9,13 +9,11 @@ _config = Settings.get_config()
 from openg2p_fastapi_common.app import Initializer as BaseInitializer
 
 from .controllers import (
-    AweController,
     ConsentVerificationController,
     DecisionsController,
     LifecycleController,
-    MetaController,
-    PartnerController,
     PartnerPortalController,
+    StaffConsentController,
     SubjectController,
     VerificationController,
     WellKnownController,
@@ -23,32 +21,27 @@ from .controllers import (
 from .models import (
     AuditLog,
     AuthContext,
-    AweProcessedEvent,
     ConsentArtefact,
     ConsentEvidence,
     ConsentReceipt,
     ConsentRequest,
     DecisionLog,
     IssuedReceipt,
-    Partner,
-    PartnerPolicy,
     RevocationRecord,
     SubjectAuthSession,
 )
 from .services import (
     AssistedConsentService,
-    AweClient,
-    AweWebhookService,
     ConsentRecordService,
     ConsentService,
+    ConsentTemplateClient,
     CryptoService,
     EvidenceService,
     ExchangeService,
     LifecycleService,
-    OtpConsentService,
-    OtpPublisher,
-    OtpService,
+    MasterDataClient,
     PartnerService,
+    PmPolicyClient,
     PolicyService,
     ReceiptService,
     SubjectAuthService,
@@ -65,23 +58,20 @@ class Initializer(BaseInitializer):
         # Services — order matters: a service that calls get_component() in its
         # __init__ must be constructed after its dependencies.
         CryptoService()
-        PartnerService()
+        PmPolicyClient()
+        PartnerService()  # depends on PmPolicyClient
         PolicyService()
         ReceiptService()
+        ConsentTemplateClient()
+        MasterDataClient()
         ExchangeService()  # depends on CryptoService
         VerificationService()
         ConsentService()
-        LifecycleService()
+        LifecycleService()  # depends on PartnerService, ConsentTemplateClient
         EvidenceService()
         SubjectAuthService()
         AssistedConsentService()
-        ConsentRecordService()  # depends on AssistedConsentService, CryptoService  # depends on Lifecycle/Evidence/Receipt
-        OtpService()
-        if OtpPublisher().enabled:  # test harness: OTP copies in S3/MinIO
-            OtpPublisher.get_component().ensure_bucket()
-        OtpConsentService()  # depends on AssistedConsentService, PartnerService, ReceiptService
-        AweClient()
-        AweWebhookService()  # depends on PartnerService
+        ConsentRecordService()  # depends on AssistedConsentService, CryptoService
 
         # Controllers — mounted per API audience (the platform's 4-API pattern).
         # One image, one deployable per audience; each mounts only its routes.
@@ -97,14 +87,14 @@ class Initializer(BaseInitializer):
             VerificationController().post_init()
             WellKnownController().post_init()
         if staff:
-            # STAFF api — Keycloak staff realm. Policy admin, approvals, decisions.
-            PartnerController().post_init()
-            MetaController().post_init()
-            AweController().post_init()
+            # STAFF api — Keycloak staff realm. Decisions. (Partners and their
+            # access policies are managed in Partner Management.)
             DecisionsController().post_init()
             # Consent scenario 1: staff verify assisted consents; partner users
             # (partner realm, own token check) use the partner portal API.
             ConsentVerificationController().post_init()
+            # Staff view of a consent, and revocation on the subject's request.
+            StaffConsentController().post_init()
             PartnerPortalController().post_init()
         if beneficiary:
             # BENEFICIARY api — Keycloak beneficiary realm. /my/* + origination.
@@ -117,8 +107,6 @@ class Initializer(BaseInitializer):
         async def migrate():
             _logger.info("Migrating consent manager database")
             for model in (
-                Partner,
-                PartnerPolicy,
                 ConsentRequest,
                 ConsentEvidence,
                 AuthContext,
@@ -128,7 +116,6 @@ class Initializer(BaseInitializer):
                 RevocationRecord,
                 DecisionLog,
                 AuditLog,
-                AweProcessedEvent,
                 IssuedReceipt,
             ):
                 await model.create_migrate()
@@ -140,108 +127,6 @@ class Initializer(BaseInitializer):
             from sqlalchemy import text
 
             async with dbengine.get().begin() as conn:
-                # Partner is now a policy binding: keys + identity live in Partner
-                # Management. Carry a PM reference; identity/onboarding fields go.
-                await conn.execute(
-                    text(
-                        "ALTER TABLE partners ADD COLUMN IF NOT EXISTS "
-                        "partner_mgmt_id VARCHAR(255)"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "CREATE INDEX IF NOT EXISTS ix_partners_partner_mgmt_id "
-                        "ON partners (partner_mgmt_id)"
-                    )
-                )
-                # name is now an optional display label; org_name + the old
-                # partner-onboarding approval columns are gone (approval moved
-                # onto the policy version).
-                await conn.execute(text("ALTER TABLE partners ALTER COLUMN name DROP NOT NULL"))
-                await conn.execute(text("ALTER TABLE partners DROP COLUMN IF EXISTS org_name"))
-                await conn.execute(text("ALTER TABLE partners DROP COLUMN IF EXISTS approval_status"))
-                await conn.execute(text("ALTER TABLE partners DROP COLUMN IF EXISTS awe_request_id"))
-                # AWE approval now correlates to a policy version.
-                await conn.execute(
-                    text(
-                        "ALTER TABLE partner_policies ADD COLUMN IF NOT EXISTS "
-                        "awe_request_id VARCHAR(64)"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "CREATE INDEX IF NOT EXISTS ix_partner_policies_awe_request_id "
-                        "ON partner_policies (awe_request_id)"
-                    )
-                )
-                # Approval state machine: the version an approval is checked
-                # against, why a version ended failed/stale/rejected, and at most
-                # one pending version per binding (older duplicates → stale).
-                await conn.execute(
-                    text(
-                        "ALTER TABLE partner_policies ADD COLUMN IF NOT EXISTS "
-                        "base_version INTEGER"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE partner_policies ADD COLUMN IF NOT EXISTS "
-                        "status_reason TEXT"
-                    )
-                )
-                # How the subject's consent must arrive (NULL = partner_signed).
-                await conn.execute(
-                    text(
-                        "ALTER TABLE partner_policies ADD COLUMN IF NOT EXISTS "
-                        "consent_method VARCHAR(20)"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "UPDATE partner_policies p SET status = 'stale', status_reason = "
-                        "'Superseded by a newer pending version (one pending per binding)' "
-                        "WHERE p.status = 'pending' AND EXISTS (SELECT 1 FROM "
-                        "partner_policies q WHERE q.partner_id = p.partner_id AND "
-                        "q.status = 'pending' AND q.version > p.version)"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "CREATE UNIQUE INDEX IF NOT EXISTS uq_partner_policy_one_pending "
-                        "ON partner_policies (partner_id) WHERE status = 'pending'"
-                    )
-                )
-
-                # ── Single consent, one grant per registry (G2P-5719) ────────
-                # A partner (audience) may now be bound to several controllers,
-                # each binding with its own policy: uniqueness moves from
-                # `audience` to (audience, controller_id). Existing rows are
-                # unchanged — each partner's controller becomes its first binding.
-                await conn.execute(
-                    text(
-                        """
-                        DO $$
-                        BEGIN
-                          IF EXISTS (
-                            SELECT 1 FROM pg_indexes
-                            WHERE tablename = 'partners'
-                              AND indexname = 'ix_partners_audience'
-                              AND indexdef ILIKE 'CREATE UNIQUE INDEX%'
-                          ) THEN
-                            DROP INDEX ix_partners_audience;
-                            CREATE INDEX ix_partners_audience ON partners (audience);
-                          END IF;
-                          IF NOT EXISTS (
-                            SELECT 1 FROM pg_constraint
-                            WHERE conname = 'uq_partner_audience_controller'
-                          ) THEN
-                            ALTER TABLE partners ADD CONSTRAINT uq_partner_audience_controller
-                              UNIQUE (audience, controller_id);
-                          END IF;
-                        END $$;
-                        """
-                    )
-                )
                 # Replay/idempotency is per (jti, data_controller): the same
                 # consent validated by two registries yields two artefacts.
                 await conn.execute(
@@ -270,12 +155,78 @@ class Initializer(BaseInitializer):
                     await conn.execute(
                         text(f"ALTER TABLE {table} ALTER COLUMN controller_id DROP NOT NULL")
                     )
+                # G2P-5719 "use_case → template": a consent (and its request)
+                # keeps the consent template it was made from as a label. Rename
+                # the column, keeping its data (and, for a request made from a
+                # template, the marker on its grants). Idempotent.
+                await conn.execute(
+                    text(
+                        """
+                        DO $$
+                        DECLARE t text;
+                        BEGIN
+                          FOREACH t IN ARRAY ARRAY['consent_artefacts', 'consent_requests'] LOOP
+                            IF EXISTS (
+                              SELECT 1 FROM information_schema.columns
+                              WHERE table_schema = current_schema() AND table_name = t
+                                AND column_name = 'use_case'
+                            ) THEN
+                              IF EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_schema = current_schema() AND table_name = t
+                                  AND column_name = 'template'
+                              ) THEN
+                                EXECUTE format(
+                                  'UPDATE %I SET template = use_case '
+                                  'WHERE template IS NULL AND use_case IS NOT NULL', t);
+                                EXECUTE format('ALTER TABLE %I DROP COLUMN use_case', t);
+                              ELSE
+                                EXECUTE format(
+                                  'ALTER TABLE %I RENAME COLUMN use_case TO template', t);
+                              END IF;
+                            END IF;
+                          END LOOP;
+                        END $$;
+                        """
+                    )
+                )
+                await conn.execute(
+                    text(
+                        """
+                        UPDATE consent_requests r SET grants = (
+                          SELECT jsonb_agg(
+                            CASE WHEN g ? 'use_case'
+                              THEN (g - 'use_case') || jsonb_build_object('template', g -> 'use_case')
+                              ELSE g END
+                            ORDER BY i)
+                          FROM jsonb_array_elements(r.grants) WITH ORDINALITY AS e(g, i))
+                        WHERE jsonb_typeof(r.grants) = 'array'
+                          AND EXISTS (
+                            SELECT 1 FROM jsonb_array_elements(r.grants) g
+                            WHERE g ? 'use_case')
+                        """
+                    )
+                )
+                for table in ("consent_artefacts", "consent_requests"):
+                    await conn.execute(
+                        text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS template VARCHAR(255)")
+                    )
                 await conn.execute(
                     text(
                         "ALTER TABLE decision_logs ADD COLUMN IF NOT EXISTS "
                         "data_controller VARCHAR(255)"
                     )
                 )
+                # The full reference of the PM policy applied (id + kind:key).
+                for table in ("decision_logs", "consent_artefacts"):
+                    for column, ddl in (("policy_id", "VARCHAR(64)"),
+                                        ("policy_ref", "VARCHAR(300)")):
+                        await conn.execute(
+                            text(
+                                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+                                f"{column} {ddl}"
+                            )
+                        )
                 # Agri Stack exchange: the consent token a decision was made
                 # on (department role). NULL for every other decision.
                 for column in ("receipt_jti", "receipt_issuer"):
@@ -288,25 +239,12 @@ class Initializer(BaseInitializer):
                 # ── Consent scenario 1: assisted requests + staff verification ──
                 for column, ddl in (
                     ("method", "VARCHAR(20)"),
-                    ("use_case", "VARCHAR(255)"),
                     ("created_by", "VARCHAR(255)"),
                     ("partner_audience", "VARCHAR(255)"),
                     ("submitted_at", "TIMESTAMPTZ"),
                     ("verified_by", "VARCHAR(255)"),
                     ("verified_at", "TIMESTAMPTZ"),
                     ("verification_note", "TEXT"),
-                    # OTP consent (method "otp").
-                    ("otp_hash", "VARCHAR(128)"),
-                    ("otp_expires_at", "TIMESTAMPTZ"),
-                    ("otp_attempts", "INTEGER"),
-                    ("otp_verified_at", "TIMESTAMPTZ"),
-                    ("otp_channel", "VARCHAR(50)"),
-                    ("otp_destination", "VARCHAR(255)"),
-                    ("otp_provider", "VARCHAR(50)"),
-                    ("otp_reference", "VARCHAR(255)"),
-                    ("otp_send_count", "INTEGER"),
-                    ("otp_last_sent_at", "TIMESTAMPTZ"),
-                    ("otp_failures_total", "INTEGER"),
                 ):
                     await conn.execute(
                         text(
@@ -338,10 +276,47 @@ class Initializer(BaseInitializer):
                         "consent_request_id VARCHAR"
                     )
                 )
+                # Who revoked a consent on the subject's request (staff API).
+                await conn.execute(
+                    text(
+                        "ALTER TABLE revocation_records ADD COLUMN IF NOT EXISTS "
+                        "revoked_by VARCHAR(255)"
+                    )
+                )
                 await conn.execute(
                     text(
                         "CREATE INDEX IF NOT EXISTS ix_consent_artefacts_consent_request_id "
                         "ON consent_artefacts (consent_request_id)"
+                    )
+                )
+                # Consent by lookup (/validate, caller-terms mode): active
+                # consents by (partner, subject, purpose), latest valid_until
+                # first. Replaces ix_consent_artefacts_lookup (by template).
+                await conn.execute(text("DROP INDEX IF EXISTS ix_consent_artefacts_lookup"))
+                await conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_consent_artefacts_purpose_lookup "
+                        "ON consent_artefacts (partner_id, subject_id_type, "
+                        "subject_id_value, (purpose ->> 'code'), valid_until DESC) "
+                        "WHERE status = 'active'"
+                    )
+                )
+                # Consent by lookup by one of the subject's other identifiers
+                # (subject_identifiers @> [{"type", "value"}]).
+                await conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_consent_artefacts_subject_identifiers "
+                        "ON consent_artefacts USING gin (subject_identifiers jsonb_path_ops)"
+                    )
+                )
+                # Consent by lookup at a registry: by (partner,
+                # subject, data controller).
+                await conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_consent_artefacts_controller_lookup "
+                        "ON consent_artefacts (partner_id, subject_id_type, "
+                        "subject_id_value, controller_id, valid_until DESC) "
+                        "WHERE status = 'active'"
                     )
                 )
             _logger.info("Database migration complete")

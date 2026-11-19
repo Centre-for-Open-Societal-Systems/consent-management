@@ -11,6 +11,11 @@ questions:
   type: string
   label: Consent Manager Hostname
   group: General
+- variable: global.partnerManagementUiUrl
+  description: Link to Partner Management's staff UI, shown in the console. Partners, their keys and their policies are managed there. Empty = no link.
+  type: string
+  label: Partner Management UI URL
+  group: General
 - variable: consentManagerApi.openapiRootPath
   description: Path prefix the API is served under (behind the ingress/VirtualService)
   type: string
@@ -22,6 +27,13 @@ questions:
   type: string
   default: develop
   label: Image Tag
+  group: General
+
+- variable: global.consentReceiptWithdrawalMethod
+  description: "How a person withdraws a consent, printed on every consent receipt. Name your organisation's contact or URL; {consent_id} is replaced by the consent's ID. Staff revoke consents on the person's request in the console."
+  type: string
+  default: "Ask the organisation operating this Consent Manager to revoke it (consent ID {consent_id})."
+  label: Consent Withdrawal Method (on receipts)
   group: General
 
 # ---------------------------- Database ------------------------------
@@ -53,7 +65,7 @@ questions:
   group: Authentication
   show_if: global.consentManagerAuthEnabled=true
 - variable: global.consentManagerAdminRole
-  description: Role required to call the partner/policy admin endpoints
+  description: Role required to call the admin endpoints
   type: string
   default: CONSENT_MANAGER_ADMIN
   label: Admin Role
@@ -161,18 +173,32 @@ questions:
   label: Run Sanity Tests (gates the deploy)
   group: Sanity
 - variable: sanity.runE2e
-  description: "Run the full end-to-end /validate round-trip too (on by default). It is the ONLY part that creates data — onboards a TEST_SANITY partner (then suspends it) and needs a Keycloak token at deploy time. Turn OFF for production where you don't want test data; smoke + contract still run and gate."
+  description: "Run the full end-to-end /validate round-trip too (on by default). It is the ONLY part that creates data — keeps a test partner (PARTNER_CM_SANITY), its key and its policy in Partner Management and needs a Keycloak token at deploy time. Turn OFF for production where you don't want test data; smoke + contract still run and gate."
   type: boolean
   default: true
   label: Run Full E2E (creates a test partner)
   group: Sanity
   show_if: sanity.enabled=true
 
+# ------------------------- Partner Management -----------------------
+- variable: global.partnerPolicyCache.ttlSeconds
+  description: "How long a partner's policy read from Partner Management is reused before it is read again. An approved policy change applies within this time."
+  type: int
+  default: 60
+  label: Partner Policy Cache TTL (seconds)
+  group: Partner Management
+- variable: global.partnerPolicyCache.hardTtlSeconds
+  description: "How long the last known policy is still used while Partner Management is unreachable; after that, requests are refused. During an outage a revoked partner can still get through for up to this long. Shorter stops a revoked partner sooner, but refuses everyone sooner when Partner Management is down."
+  type: int
+  default: 21600
+  label: Partner Policy Hard TTL (seconds)
+  group: Partner Management
+
 # ------------------------------ Exchange ----------------------------
 # Off by default: a standalone install leaves this alone. Pick a role and the
 # defaults are the reference values (Agri Stack's); fill the fields only to differ.
 - variable: global.agriStackExchange.role
-  description: "Consent tokens between Consent Managers, for a data exchange (e.g. Agri Stack) whose composites read several registries. exchange = this CM issues a consent token per registry to the Composite (the Exchange install); department = this CM accepts the Exchange CM's tokens (a registry's install); none = neither."
+  description: "Role of this Consent Manager in a data exchange (e.g. Agri Stack), where a Composite reads several registries. exchange: choose on the Exchange's install; this CM issues the Composite a consent token per registry. department: choose on each registry's install (e.g. a department's Farmer Registry); this CM accepts consent tokens from the Exchange CM. none: not part of a data exchange."
   type: enum
   options: [none, exchange, department]
   default: none
@@ -186,17 +212,31 @@ questions:
   group: Exchange
   show_if: global.agriStackExchange.role=exchange
 - variable: global.agriStackExchange.receiptPresenters
-  description: "Comma-separated partner IDs allowed to ask for tokens. Empty = agri-composite."
+  description: "Comma-separated partner IDs of the Composite(s) that may ask this CM for consent tokens, not the partners (e.g. banks) they serve. Empty = agri-composite."
   type: string
   default: ""
   label: Token Presenters
   group: Exchange
   show_if: global.agriStackExchange.role=exchange
 - variable: global.agriStackExchange.receiptTtlSeconds
-  description: "Token lifetime in seconds (capped by the consent's expiry)."
+  description: "Consent token lifetime in seconds (capped by the consent's expiry). Short, because departments check tokens offline: a revocation reaches tokens already issued within this time."
   type: int
-  default: 900
+  default: 300
   label: Token Lifetime (seconds)
+  group: Exchange
+  show_if: global.agriStackExchange.role=exchange
+- variable: partnerApi.exposeReceiptStatus
+  description: "Route GET /consent/v1/receipts/{jti}/status on the public partner host, so departments can check a token's status here. Needed only if a department turns its Token Status Check on. Off: only the public keys (/.well-known/jwks.json) are reachable from outside; /validate is always in-cluster only."
+  type: boolean
+  default: false
+  label: Expose Token Status Endpoint
+  group: Exchange
+  show_if: global.agriStackExchange.role=exchange
+- variable: global.agriStackExchange.consentTemplateSourceUrl
+  description: "Where this CM reads the consent templates offered to each partner (in-cluster URL of the template collection; GET <url>?partner=<id>). Partner-portal and lifecycle consents here are made from one: its purpose, scopes per registry and limits. Empty = http://agri-composite-api/composite/v1/internal/consent-templates (the Composite in this namespace)."
+  type: string
+  default: ""
+  label: Consent Template Source URL
   group: Exchange
   show_if: global.agriStackExchange.role=exchange
 - variable: global.agriStackExchange.exchangeDomain
@@ -214,7 +254,7 @@ questions:
   group: Exchange
   show_if: global.agriStackExchange.role=department
 - variable: global.agriStackExchange.trustedIssuer.presenter
-  description: "The only partner allowed to present its tokens here. Empty = agri-composite. Bind it at this CM with a policy per registry (setup_exchange.py does it)."
+  description: "The partner ID of the Composite: the only caller that may present the Exchange's consent tokens here. Empty = agri-composite. Partners that call this registry directly, with a consent of their own, are not affected. Its scope policy per registry is in this install's Partner Management (setup_exchange.py raises and approves it)."
   type: string
   default: ""
   label: Trusted Token Presenter
@@ -228,10 +268,10 @@ questions:
   group: Exchange
   show_if: global.agriStackExchange.role=department
 - variable: global.agriStackExchange.receiptStatusCheck
-  description: "Check each token's status (revoked/expired) at the Exchange CM."
+  description: "Check each token's status (revoked/expired) at the Exchange CM. Off by default: tokens are short-lived and single-use; a revocation applies at the Exchange immediately and to issued tokens within their lifetime. Turning it on adds a runtime call to the Exchange CM for every token, and the Exchange must expose its token status endpoint (Expose Token Status Endpoint on its install)."
   type: enum
-  options: [always, never]
-  default: always
+  options: [never, always]
+  default: never
   label: Token Status Check
   group: Exchange
   show_if: global.agriStackExchange.role=department
@@ -241,7 +281,7 @@ questions:
 # partner portal SPA, provisions the Keycloak `partner` realm + client, gives
 # the staff api the partner-realm token settings and turns on evidence storage.
 - variable: partnerPortal.enabled
-  description: "Deploy the partner portal (consent collected in person by partner users, e.g. bank staff) with evidence storage. Creates the Keycloak realm `partner` and the consent-partner-portal client. After install, run deployment/scripts/setup-partner-realm.sh once (realm roles, partner_id attribute and mapper, partner users)."
+  description: "Turn on where partners' staff collect consent in this Consent Manager: in person, with the subject's national-ID login and signed form, checked by CM staff (e.g. on the Exchange's install). A registry's own install does not need it today: partners that call the registry directly present a consent they collected and signed themselves. Creates the Keycloak realm `partner` with its client, roles and partner_id attribute; partner users are then added in Keycloak. Also turns on evidence storage."
   type: boolean
   default: false
   label: Partner Portal
@@ -252,13 +292,6 @@ questions:
   label: Partner Portal Hostname
   group: Partner portal
   show_if: partnerPortal.enabled=true
-- variable: partnerPortal.compositeUrl
-  description: "Optional Composite base URL (e.g. the Exchange's use-case service). When set, the portal lists the Composite's use cases and can prefill a request from one. Empty = none; for the exchange role, https://agri-composite.<this domain>."
-  type: string
-  default: ""
-  label: Composite URL
-  group: Partner portal
-  show_if: partnerPortal.enabled=true
 - variable: partnerPortal.subjectAuth.enabled
   description: "The subject's national-ID login through eSignet, mandatory on every request (with the signed form and the staff check). Needs eSignet (and, for testing, the mock identity system) in the namespace; a job registers this CM's client in eSignet."
   type: boolean
@@ -266,11 +299,46 @@ questions:
   label: Require National-ID Login (eSignet)
   group: Partner portal
   show_if: partnerPortal.enabled=true&&global.agriStackExchange.role!=exchange
+- variable: partnerPortal.assistedConfirmation.enabled
+  description: "Assisted confirmation (consent scenario 0): after the subject's national-ID login, one 'I agree' in the partner portal makes the consent active at once, with no signed form and no Consent Approver. The weakest proof: used only for partners whose Partner Management policy also allows it. Needs the national-ID login."
+  type: boolean
+  default: false
+  label: Allow Assisted Confirmation (no form)
+  group: Partner portal
+  show_if: partnerPortal.enabled=true
+- variable: partnerPortal.assistedConfirmation.validityDays
+  description: "How long a consent given by assisted confirmation lasts, in days (capped by the policy's or consent template's longest validity)."
+  type: int
+  default: 30
+  label: Assisted Confirmation Validity (days)
+  group: Partner portal
+  show_if: partnerPortal.enabled=true&&partnerPortal.assistedConfirmation.enabled=true
 - variable: partnerPortal.requiredSubjectIdentifiers
   description: "Comma-separated identifiers every request must carry besides the subject ID, checked by staff in the registry before approving. Empty = none; for the exchange role, FARMER_ID."
   type: string
   default: ""
   label: Required Subject Identifiers
+  group: Partner portal
+  show_if: partnerPortal.enabled=true
+- variable: masterData.url
+  description: "Master Data Service (staff API) whose code lists give the portal's purposes and subject ID types, read with this release's consent-manager Keycloak client (service account). With a list loaded, requests naming other values are refused; if Master Data is unreachable, or the list is not in the country's Master Data, they are free text. Empty = free text."
+  type: string
+  default: http://commons-services-master-data-api
+  label: Master Data URL
+  group: Partner portal
+  show_if: partnerPortal.enabled=true
+- variable: masterData.purposeListCode
+  description: Master Data list of consent purposes offered in the portal. Empty = free text.
+  type: string
+  default: CONSENT_PURPOSE
+  label: Purposes List Code
+  group: Partner portal
+  show_if: partnerPortal.enabled=true
+- variable: masterData.subjectIdTypeListCode
+  description: Master Data list of subject ID types offered in the portal. Empty = free text.
+  type: string
+  default: SUBJECT_ID_TYPE
+  label: Subject ID Types List Code
   group: Partner portal
   show_if: partnerPortal.enabled=true
 - variable: evidence.s3.endpoint

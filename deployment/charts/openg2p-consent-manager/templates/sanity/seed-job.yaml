@@ -2,7 +2,8 @@
 {{- $s := .Values.sanity -}}
 # Deploy-time seeding of the persistent Partner Management test partner.
 #
-# The signed /validate e2e needs a real partner + key in Partner Management. This
+# The signed /validate e2e needs a real partner, key and scope policy (for
+# sanity.controllerId) in Partner Management. This
 # Job seeds it (idempotently) as part of every install/upgrade — BEFORE the
 # sanity test Job — so seeding is a deploy step, not a side effect of the test.
 # It only runs when the e2e that needs it is enabled (sanity.enabled + runE2e).
@@ -40,7 +41,7 @@ spec:
           command: ["sh", "-c", "python -m sanity.pm_seed || echo '[pm-seed] non-fatal error; continuing deploy'"]
           env:
             {{- include "consentManagerSanity.pmSeedEnv" . | nindent 12 }}
-            # PM-admin credentials: the consent-manager client, which must hold
-            # the partner_manager role in the staff realm.
+            # Fallback PM-admin credentials: the consent-manager client, which
+            # must then hold the partner_manager role in the staff realm.
             {{- include "consentManagerSanity.kcClientEnv" . | nindent 12 }}
 {{- end }}

@@ -2,15 +2,17 @@
 #
 # setup-partner-realm.sh
 # ----------------------
-# One-time (idempotent) Keycloak setup for the Consent Manager's partner portal: the
-# parts the chart's keycloak-init cannot do. Run after installing the CM with
-# partnerPortal.enabled (keycloak-init creates the "partner" realm and the
-# "consent-partner-portal" client; if the realm is missing this script creates it).
+# Creates partner portal users (--user) in Keycloak. The chart's keycloak-init already
+# sets up the "partner" realm when the CM is installed with partnerPortal.enabled: the
+# "consent-partner-portal" client, its client roles PARTNER_OPERATOR and PARTNER_ADMIN,
+# the user-profile attribute partner_id and the mapper putting it into tokens. Steps 1-3
+# only fill in what older installs (keycloak-init before user-profile attributes and
+# mappers) lack; they find everything in place otherwise. Idempotent.
 #
-#   1. realm roles PARTNER_OPERATOR and PARTNER_ADMIN
+#   1. the client roles, if missing
 #   2. the user-profile attribute partner_id (Keycloak 24+ rejects undeclared attributes)
 #   3. a protocol mapper putting partner_id into the portal client's tokens
-#   4. optionally, partner users (--user): attribute partner_id, a realm role, and a
+#   4. partner users (--user): attribute partner_id, the client role, and a
 #      generated password kept in a Kubernetes Secret "partner-user-<username>"
 #
 # Runs Keycloak's admin CLI (kcadm.sh) inside the Keycloak pod; the admin password is
@@ -91,15 +93,6 @@ else
   fi
 fi
 
-_blue "==> Realm roles"
-for role in PARTNER_OPERATOR PARTNER_ADMIN; do
-  if kc get "roles/$role" -r "$REALM" --fields name >/dev/null 2>&1; then
-    echo "  $role exists"
-  else
-    change create roles -r "$REALM" -s "name=$role" -s "description=Consent Manager partner portal: $role"
-  fi
-done
-
 _blue "==> User-profile attribute partner_id"
 PROFILE=$(kc get users/profile -r "$REALM")
 if python3 -c 'import json,sys; sys.exit(0 if any(a.get("name")=="partner_id" for a in json.load(sys.stdin).get("attributes",[])) else 1)' <<<"$PROFILE"; then
@@ -117,12 +110,21 @@ print(json.dumps(p))' <<<"$PROFILE")
   [[ "$DRY_RUN" == true ]] || kc update users/profile -r "$REALM" -f - <<<"$NEW_PROFILE" >/dev/null
 fi
 
-_blue "==> Token mapper on client '$CLIENT'"
 CID=$(kc get clients -r "$REALM" -q "clientId=$CLIENT" --fields id | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[0]["id"] if d else "")')
 if [[ -z "$CID" ]]; then
   echo "  client '$CLIENT' not found in realm '$REALM' — install the CM with partnerPortal.enabled first (keycloak-init creates it)"
   exit 1
 fi
+_blue "==> Client roles on '$CLIENT'"
+for role in PARTNER_OPERATOR PARTNER_ADMIN; do
+  if kc get "clients/$CID/roles/$role" -r "$REALM" --fields name >/dev/null 2>&1; then
+    echo "  $role exists"
+  else
+    change create "clients/$CID/roles" -r "$REALM" -s "name=$role" -s "description=Consent Manager partner portal: $role"
+  fi
+done
+
+_blue "==> Token mapper on client '$CLIENT'"
 if kc get "clients/$CID/protocol-mappers/models" -r "$REALM" --fields name | grep -q '"partner_id"'; then
   echo "  mapper exists"
 else
@@ -136,7 +138,8 @@ for spec in "${USERS[@]+"${USERS[@]}"}"; do
   IFS=: read -r username partner_id role <<<"$spec"
   _blue "==> Partner user '$username' (partner $partner_id, $role)"
   if kc get users -r "$REALM" -q "username=$username" -q exact=true --fields id | grep -q '"id"'; then
-    echo "  exists (attribute, role and password left as they are)"
+    echo "  exists (attribute and password left as they are)"
+    change add-roles -r "$REALM" --uusername "$username" --cclientid "$CLIENT" --rolename "$role"
     continue
   fi
   SECRET_NAME="partner-user-$username"
@@ -152,7 +155,7 @@ for spec in "${USERS[@]+"${USERS[@]}"}"; do
     -s "attributes.partner_id=[\"$partner_id\"]"
   echo "  > kcadm set-password $username (from Secret $SECRET_NAME)"
   [[ "$DRY_RUN" == true ]] || kc set-password -r "$REALM" --username "$username" --new-password "$PW"
-  change add-roles -r "$REALM" --uusername "$username" --rolename "$role"
+  change add-roles -r "$REALM" --uusername "$username" --cclientid "$CLIENT" --rolename "$role"
   unset PW
   _green "  password in Secret $NAMESPACE/$SECRET_NAME"
 done

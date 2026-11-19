@@ -9,12 +9,16 @@ from openg2p_fastapi_common.controller import BaseController
 from ..auth import PartnerUser, current_partner_user
 from ..config import Settings
 from ..schemas.portal import (
+    AssistedConfirm,
     AssistedRequestCreate,
     AssistedRequestDetail,
     AssistedRequestList,
     AssistedRequestResponse,
+    CodeListOut,
+    CodeOption,
+    ConfirmationTerms,
     EvidenceResponse,
-    PartnerBindingView,
+    PartnerAccessView,
     PartnerConsentList,
     PartnerConsentResponse,
     PartnerMe,
@@ -23,16 +27,16 @@ from ..schemas.portal import (
     SubjectAuthStart,
     SubjectAuthSummary,
 )
-from ..schemas.otp_consent import OtpConsentGranted, VerifyOtpRequest
 from ..services import (
     AssistedConsentService,
     ConsentRecordService,
     ConsentService,
     EvidenceError,
     LifecycleError,
-    OtpConsentService,
+    MasterDataClient,
     SubjectAuthService,
 )
+from ..services.template_client import consent_by_template
 from .assisted_views import (
     consent_view,
     error,
@@ -47,7 +51,7 @@ _logger = logging.getLogger(_config.logging_default_logger_name)
 
 
 class PartnerPortalController(BaseController):
-    """Partner portal API (consent scenario 1) — partner users from the
+    """Partner portal API (consent scenarios 1 and 0) — partner users from the
     Keycloak ``partner`` realm. Every call is scoped to the token's
     ``partner_id``; another partner's request or consent is 404. Disabled (404)
     while the partner realm is not configured."""
@@ -58,7 +62,7 @@ class PartnerPortalController(BaseController):
         self.consents = ConsentService.get_component()
         self.subject_auth = SubjectAuthService.get_component()
         self.records = ConsentRecordService.get_component()
-        self.otp_consents = OtpConsentService.get_component()
+        self.master_data = MasterDataClient.get_component()
         self.router.prefix += "/consent/v1/partner-portal"
         self.router.tags += ["Partner portal"]
 
@@ -69,7 +73,7 @@ class PartnerPortalController(BaseController):
             )
 
         route("/me", self.me, "GET", PartnerMe)
-        route("/bindings", self.bindings, "GET", list[PartnerBindingView])
+        route("/access", self.access, "GET", PartnerAccessView)
         route("/consent-requests", self.create_request, "POST", AssistedRequestResponse, 201)
         route("/consent-requests", self.list_requests, "GET", AssistedRequestList)
         route("/consent-requests/{request_id}", self.get_request, "GET", AssistedRequestDetail)
@@ -93,14 +97,14 @@ class PartnerPortalController(BaseController):
             "/consent-requests/{request_id}/cancel", self.cancel, "POST",
             AssistedRequestResponse,
         )
-        # method "otp": the subject's one-time code (sent when the request was
-        # raised) grants the consent — no evidence, no staff verification.
+        # Assisted confirmation (scenario 0): the terms to show the subject after
+        # the national-ID login, and the "I agree" that makes the consent at once.
         route(
-            "/consent-requests/{request_id}/verify-otp", self.verify_otp, "POST",
-            OtpConsentGranted, 201,
+            "/consent-requests/{request_id}/confirmation", self.confirmation, "GET",
+            ConfirmationTerms,
         )
         route(
-            "/consent-requests/{request_id}/resend-otp", self.resend_otp, "POST",
+            "/consent-requests/{request_id}/confirm", self.confirm, "POST",
             AssistedRequestResponse,
         )
         # The subject's national-ID login (eSignet): start it, follow it; the
@@ -138,17 +142,21 @@ class PartnerPortalController(BaseController):
             roles=user.roles,
         )
 
-    async def bindings(self, user: PartnerUser = Depends(current_partner_user)):
-        return [PartnerBindingView(**b) for b in await self.assisted.bindings(user.partner_id)]
+    async def access(self, user: PartnerUser = Depends(current_partner_user)):
+        """What the partner may ask for: at the Exchange, the consent templates
+        offered to it by the template source (purpose, scopes per registry and
+        limits); elsewhere its scope policies."""
+        try:
+            view = await self.assisted.access(user.partner_id)
+        except LifecycleError as exc:
+            return error(exc.status_code, exc.detail)
+        return PartnerAccessView(**view)
 
     async def create_request(
         self, data: AssistedRequestCreate, user: PartnerUser = Depends(current_partner_user),
     ):
         try:
-            if data.method == "otp":
-                req = await self.otp_consents.create_request(user.partner_id, user.username, data)
-            else:
-                req = await self.assisted.create_request(user.partner_id, user.username, data)
+            req = await self.assisted.create_request(user.partner_id, user.username, data)
         except LifecycleError as exc:
             return error(exc.status_code, exc.detail)
         return JSONResponse(
@@ -247,25 +255,29 @@ class PartnerPortalController(BaseController):
             return error(exc.status_code, exc.detail)
         return await self._request_response(req)
 
-    async def verify_otp(
-        self, request_id: str, data: VerifyOtpRequest,
-        user: PartnerUser = Depends(current_partner_user),
+    async def confirmation(
+        self, request_id: str, user: PartnerUser = Depends(current_partner_user)
     ):
+        """The terms of an assisted confirmation (scenario 0): the exact
+        statement to show the subject and the consent it makes. 403 when the
+        install or the partner's policy does not allow it."""
         try:
-            _, artefact = await self.otp_consents.verify_otp(
-                request_id, user.partner_id, user.username, data.otp
-            )
+            terms = await self.assisted.confirmation(request_id, user.partner_id)
         except LifecycleError as exc:
             return error(exc.status_code, exc.detail)
-        receipt = await self.consents.get_receipt_by_consent(artefact.id)
-        body = OtpConsentGranted(
-            **consent_view(artefact, {}).model_dump(), receipt_id=receipt.id if receipt else None
-        )
-        return JSONResponse(status_code=201, content=body.model_dump(mode="json"))
+        return ConfirmationTerms(**terms)
 
-    async def resend_otp(self, request_id: str, user: PartnerUser = Depends(current_partner_user)):
+    async def confirm(
+        self, request_id: str, data: AssistedConfirm,
+        user: PartnerUser = Depends(current_partner_user),
+    ):
+        """The subject agreed to the statement shown (assisted confirmation):
+        the consent is active at once. Needs the subject's recent national-ID
+        login; no signed form, no Consent Approver."""
         try:
-            req = await self.otp_consents.resend_otp(request_id, user.partner_id)
+            req, _ = await self.assisted.confirm(
+                request_id, user.partner_id, user.username, data.statement
+            )
         except LifecycleError as exc:
             return error(exc.status_code, exc.detail)
         return await self._request_response(req)
@@ -283,9 +295,21 @@ class PartnerPortalController(BaseController):
     async def request_settings(
         self, user: PartnerUser = Depends(current_partner_user)
     ) -> RequestSettings:
+        lists = {}
+        for kind in ("purposes", "subject_id_types"):
+            codes = await self.master_data.code_list(kind)
+            lists[kind] = codes and CodeListOut(
+                list_code=codes.list_code,
+                values=[CodeOption(code=c, label=label) for c, label in codes.values],
+            )
         return RequestSettings(
+            consent_by="template" if consent_by_template() else "scopes",
             required_subject_identifiers=_config.subject_required_identifiers,
             subject_auth=await self.subject_auth_config(user),
+            assisted_confirmation=bool(
+                _config.assisted_confirmation_enabled and self.subject_auth.enabled
+            ),
+            **lists,
         )
 
     async def start_subject_auth(
@@ -337,18 +361,18 @@ class PartnerPortalController(BaseController):
         limit: int = Query(50, ge=1, le=200),
         offset: int = Query(0, ge=0),
     ) -> PartnerConsentList:
-        total, rows, use_cases = await self.assisted.list_consents(
+        total, rows, templates = await self.assisted.list_consents(
             user.partner_id, status, limit, offset
         )
-        return PartnerConsentList(total=total, items=[consent_view(a, use_cases) for a in rows])
+        return PartnerConsentList(total=total, items=[consent_view(a, templates) for a in rows])
 
     async def get_consent(
         self, consent_id: str, user: PartnerUser = Depends(current_partner_user)
     ):
-        artefact, use_cases = await self.assisted.get_consent(user.partner_id, consent_id)
+        artefact, templates = await self.assisted.get_consent(user.partner_id, consent_id)
         if artefact is None:
             return not_found()
-        return consent_view(artefact, use_cases)
+        return consent_view(artefact, templates)
 
     async def get_receipt(
         self, consent_id: str, user: PartnerUser = Depends(current_partner_user)

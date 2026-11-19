@@ -1,91 +1,82 @@
-"""Server-side validation of the binding / policy fields the admin UI offers as
-fixed choices (G2P-5719), the /meta endpoint that serves those choices, and that
-a policy stored before these rules still loads (flagged in ``issues``)."""
-import uuid
-
+"""The partner's policy in Partner Management applied on /validate (G2P-5719):
+each policy field the evaluation reads, the PM id convention, and that the
+CM's own partner / policy / approval APIs are gone."""
 import pytest
-
-CONTROLLER = "farmer-registry"
+from test_grants import FR, FR_SCOPES, bind, validate
 
 
 @pytest.fixture
-def binding(call):
-    status, body = call("POST", "/consent/v1/partners", json={
-        "audience": f"val-{uuid.uuid4().hex[:8]}", "controller_id": CONTROLLER,
-    })
-    assert status == 201, body
-    return body["id"]
+def partner(pm, new_partner):
+    p = new_partner()
+    bind(pm, p, FR, FR_SCOPES)
+    return p
 
 
-def put_policy(call, binding_id, **fields):
-    payload = {"allowed_data_scopes": ["farm_details"], "allowed_signing_algs": ["EdDSA"]}
-    payload.update(fields)
-    return call("PUT", f"/consent/v1/partners/{binding_id}/policy", json=payload)
+def legacy(p, **extra):
+    return p.sign(p.claims(data_controller=FR, data_scopes=FR_SCOPES, **extra))
 
 
-def error_text(body):
-    # The platform's handler: 400 {"errors": [{"code", "message"}]}.
-    return " ".join(e["message"] for e in body["errors"])
+def test_pm_partner_id_convention():
+    from openg2p_consent_manager.services import pm_partner_id
+
+    assert pm_partner_id("bank-a") == "PARTNER_BANK_A"
+    assert pm_partner_id("agri-composite") == "PARTNER_AGRI_COMPOSITE"
 
 
-def test_meta_lists_allowed_values(call, binding):
-    status, body = call("GET", "/consent/v1/meta")
-    assert status == 200, body
-    assert body["signing_algorithms"] == ["EdDSA", "ES256", "RS256"]
-    assert body["fetch_types"] == ["oneshot", "periodic"]
-    assert body["partner_statuses"] == ["active", "suspended"]
-    assert CONTROLLER in body["known_controller_ids"]
-    # The configured default subject id type is always suggested.
-    assert "national_id" in body["known_subject_id_types"]
+def test_policy_is_read_from_pm_by_convention(call, pm, partner):
+    pm.requests.clear()
+    pm.client.invalidate(partner.audience)
+    dec = validate(call, legacy(partner), FR)
+    assert dec["decision"] == "permit", dec
+    assert dec["policy_version"] == 1
+    req = pm.requests[-1]
+    assert req.url.path == f"/policies/{partner.pm_id}"
+    assert req.url.params["data_controller"] == FR
 
 
-def test_valid_policy_is_accepted_and_normalised(call, binding):
-    status, body = put_policy(
-        call, binding,
-        allowed_signing_algs=["EdDSA", " ES256 ", "EdDSA"],
-        allowed_purposes=["credit-assessment", "", "credit-assessment"],
-        fetch_type="periodic", max_validity_duration=" p90d ",
-        max_fetch_frequency="P1D", data_life="P1DT6H",
-    )
-    assert status == 200, body
-    assert body["allowed_signing_algs"] == ["EdDSA", "ES256"]
-    assert body["allowed_purposes"] == ["credit-assessment"]
-    assert body["max_validity_duration"] == "P90D"
-    assert body["fetch_type"] == "periodic"
-    assert body["issues"] == []
-
-
-@pytest.mark.parametrize("fields, bad", [
-    ({"allowed_signing_algs": ["HS256"]}, "allowed_signing_algs"),
-    ({"allowed_signing_algs": ["EdDSA", "none"]}, "allowed_signing_algs"),
-    ({"allowed_signing_algs": []}, "allowed_signing_algs"),
-    ({"allowed_signing_algs": ["  "]}, "allowed_signing_algs"),
-    ({"fetch_type": "streaming"}, "fetch_type"),
-    ({"max_validity_duration": "30 days"}, "max_validity_duration"),
-    ({"max_validity_duration": "P"}, "max_validity_duration"),
-    ({"max_validity_duration": "P0D"}, "max_validity_duration"),
-    ({"max_fetch_frequency": "daily"}, "max_fetch_frequency"),
-    ({"data_life": "P" + "1" * 40 + "D"}, "data_life"),
+@pytest.mark.parametrize("policy, claims, reason", [
+    ({"allowed_purposes": ["marketing"]}, {}, "purpose_not_allowed"),
+    ({"allowed_subject_id_types": ["PHONE"]}, {}, "subject_not_allowed"),
+    ({"allowed_signing_algs": ["ES256"]}, {}, "signature_invalid"),
+    ({"max_validity_duration": "P7D"}, {}, "validity_exceeds_policy"),
+    ({"allowed_data_scopes": ["livestock"]}, {}, "scope_exceeds_policy"),
 ])
-def test_invalid_policy_is_rejected(call, binding, fields, bad):
-    status, body = put_policy(call, binding, **fields)
-    assert status == 400, body
-    assert bad in error_text(body)
+def test_policy_fields_are_applied(call, pm, new_partner, policy, claims, reason):
+    p = new_partner()
+    fields = dict(policy)
+    scopes = fields.pop("allowed_data_scopes", FR_SCOPES)
+    bind(pm, p, FR, scopes, **fields)
+    dec = validate(call, legacy(p, **claims), FR)
+    assert dec["decision"] == "deny" and dec["reason_code"] == reason, dec
+    assert dec["data_controller"] == FR
 
 
-def test_null_durations_mean_no_cap(call, binding):
-    status, body = put_policy(call, binding, max_validity_duration="", data_life=None)
-    assert status == 200, body
-    assert body["max_validity_duration"] is None and body["data_life"] is None
+def test_empty_lists_mean_any(call, pm, new_partner):
+    p = new_partner()
+    bind(pm, p, FR, FR_SCOPES, allowed_purposes=[], allowed_subject_id_types=[],
+         max_validity_duration=None)
+    dec = validate(call, legacy(p), FR)
+    assert dec["decision"] == "permit", dec
 
 
-def test_partner_status_is_validated(call, binding):
-    status, body = call("PATCH", f"/consent/v1/partners/{binding}", json={"status": "deleted"})
-    assert status == 400 and "status" in error_text(body), body
-    status, body = call("PATCH", f"/consent/v1/partners/{binding}", json={"status": "suspended"})
-    assert status == 200 and body["status"] == "suspended", body
-    status, body = call("PATCH", f"/consent/v1/partners/{binding}", json={"status": "active"})
-    assert status == 200 and body["status"] == "active", body
+def test_unknown_partner_when_pm_answers_404(call, new_partner):
+    p = new_partner()  # keys, but no policy in PM
+    dec = validate(call, legacy(p), FR)
+    assert dec["decision"] == "deny" and dec["reason_code"] == "unknown_partner"
+    assert "Partner Management" in dec["detail"]
+
+
+@pytest.mark.parametrize("method, path", [
+    ("GET", "/consent/v1/partners"),
+    ("POST", "/consent/v1/partners"),
+    ("PUT", "/consent/v1/partners/x/policy"),
+    ("GET", "/consent/v1/meta"),
+    ("GET", "/consent/v1/awe/tasks"),
+    ("POST", "/consent/v1/awe/webhooks/decision"),
+])
+def test_partner_policy_and_awe_apis_are_gone(call, method, path):
+    status, _ = call(method, path, json={} if method != "GET" else None)
+    assert status in (404, 405)
 
 
 def test_decision_filter_is_validated(call):
@@ -93,41 +84,3 @@ def test_decision_filter_is_validated(call):
     assert status == 400
     status, _ = call("GET", "/consent/v1/decisions", params={"decision": "deny"})
     assert status == 200
-
-
-def test_stored_policy_with_now_invalid_values_still_loads(call, run, binding):
-    """A version saved before these rules (written straight to the DB) loads,
-    with its problems listed in ``issues`` rather than failing the page."""
-    from datetime import datetime, timezone
-
-    from openg2p_consent_manager.db import async_session
-    from openg2p_consent_manager.models import PartnerPolicy
-
-    async def store():
-        async with async_session()() as session:
-            session.add(PartnerPolicy(
-                partner_id=binding, version=1, status="active",
-                allowed_data_scopes=["farm_details"], allowed_purposes=[],
-                allowed_subject_id_types=[], allowed_signing_algs=["HS256"],
-                max_validity_duration="30 days", fetch_type="streaming",
-                effective_from=datetime.now(timezone.utc),
-            ))
-            await session.commit()
-
-    run(store())
-    status, body = call("GET", f"/consent/v1/partners/{binding}/policy")
-    assert status == 200, body
-    assert body["allowed_signing_algs"] == ["HS256"]
-    issues = " ".join(body["issues"])
-    assert "allowed_signing_algs" in issues
-    assert "fetch_type" in issues
-    assert "max_validity_duration" in issues
-
-    status, body = call("GET", f"/consent/v1/partners/{binding}/policies")
-    assert status == 200 and len(body[0]["issues"]) == 3, body
-
-    # Re-saving it unchanged is rejected until the values are fixed.
-    status, _ = put_policy(call, binding, allowed_signing_algs=["HS256"])
-    assert status == 400
-    status, body = put_policy(call, binding)
-    assert status == 200 and body["version"] == 2 and body["issues"] == [], body

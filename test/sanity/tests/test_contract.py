@@ -2,7 +2,7 @@ import pytest
 
 # Contract: the audience split enforces the right auth model —
 #   partner api (/validate): NO Keycloak (trust = the signed consent object);
-#   staff api (/partners):   Keycloak required.
+#   staff api (/decisions):  Keycloak required.
 
 
 @pytest.mark.contract
@@ -18,8 +18,5 @@ def test_validate_is_open(partner_client):
 def test_admin_requires_auth(client, cfg):
     if not cfg.auth_enabled:
         pytest.skip("auth disabled")
-    r = client.post(
-        "/consent/v1/partners",
-        json={"audience": "x", "controller_id": "x"},
-    )
+    r = client.get("/consent/v1/decisions")
     assert r.status_code in (401, 403), f"expected 401/403, got {r.status_code}: {r.text}"

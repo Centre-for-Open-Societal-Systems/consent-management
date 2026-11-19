@@ -33,7 +33,13 @@ from .crypto_service import CryptoService
 _config = Settings.get_config()
 _logger = logging.getLogger(_config.logging_default_logger_name)
 
-RECEIPT_TYP = "consent-receipt+jwt"
+# Header `typ` of a consent token (explicit typing, RFC 8725 §3.11). Tokens are
+# issued with TOKEN_TYP; LEGACY_TOKEN_TYP (the name from when they were called
+# consent receipts) is still recognised, so a department on an older CM and one
+# on a newer CM both accept tokens while the Exchange and departments upgrade.
+TOKEN_TYP = "consent-token+jwt"
+LEGACY_TOKEN_TYP = "consent-receipt+jwt"
+TOKEN_TYPS = frozenset({TOKEN_TYP, LEGACY_TOKEN_TYP})
 _JWKS_SUFFIX = "/.well-known/jwks.json"
 _STATUS_PATH = "/consent/v1/receipts/{jti}/status"
 
@@ -113,7 +119,7 @@ class ExchangeService(BaseService):
                 )
             )
             await session.commit()
-        return self.crypto.sign_jws(claims, RECEIPT_TYP)
+        return self.crypto.sign_jws(claims, TOKEN_TYP)
 
     async def receipt_status(self, jti: str) -> Optional[dict]:
         """active | revoked (its consent was revoked) | expired; None if unknown."""

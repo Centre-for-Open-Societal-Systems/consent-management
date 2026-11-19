@@ -58,12 +58,13 @@ class ConsentService(BaseService):
 
     async def revoke(
         self, consent_id: str, originated_by: str, reason: Optional[str],
-        subject_claims: Optional[dict] = None,
+        subject_claims: Optional[dict] = None, revoked_by: Optional[str] = None,
     ) -> Optional[ConsentArtefact]:
         """Revoke an active consent. Append-only; raises ValueError on conflict.
 
         Returns None if not found. If subject_claims is given, enforces that the
-        caller is the subject (used by the subject API).
+        caller is the subject (used by the subject API). ``revoked_by``: the
+        staff user revoking it on the subject's request (staff API).
         """
         async with async_session()() as session:
             artefact = await session.get(ConsentArtefact, consent_id)
@@ -82,12 +83,26 @@ class ConsentService(BaseService):
             artefact.revoked_at = now
             session.add(
                 RevocationRecord(
-                    consent_id=consent_id, originated_by=originated_by, reason=reason
+                    consent_id=consent_id, originated_by=originated_by, reason=reason,
+                    revoked_by=revoked_by,
                 )
             )
             await session.commit()
             await session.refresh(artefact)
             return artefact
+
+    async def get_artefact(self, consent_id: str) -> Optional[ConsentArtefact]:
+        async with async_session()() as session:
+            return await session.get(ConsentArtefact, consent_id)
+
+    async def list_revocations(self, consent_id: str) -> list:
+        async with async_session()() as session:
+            rows = await session.execute(
+                select(RevocationRecord)
+                .where(RevocationRecord.consent_id == consent_id)
+                .order_by(RevocationRecord.created_at)
+            )
+            return list(rows.scalars().all())
 
     async def expire_stale(self) -> int:
         """Mark active artefacts past valid_until as expired. Safe to run from a

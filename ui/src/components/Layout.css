@@ -67,6 +67,11 @@
   color: var(--color-yellow);
   border-left-color: var(--color-yellow);
 }
+/* External link (another OpenG2P app, new tab). */
+.nav-external {
+  margin-left: auto;
+  opacity: 0.6;
+}
 
 .sidebar-user {
   display: flex;

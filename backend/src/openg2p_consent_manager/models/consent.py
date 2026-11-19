@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -37,7 +37,6 @@ class RequestMethod(str, Enum):
     """How the subject confirms the request."""
 
     assisted = "assisted"  # in person; evidence (signed form) verified by staff
-    otp = "otp"  # the CM sends the subject a code; the partner submits it
     sms = "sms"
     self_service = "self_service"
 
@@ -53,11 +52,14 @@ class ConsentRequest(BaseORMModelWithId):
     # The single controller for a legacy request; NULL when the request carries
     # several ``grants`` (one per controller).
     controller_id: Mapped[Optional[str]] = mapped_column(String(255), index=True, nullable=True)
+    # The partner the consent is asked for: its audience (e.g. bank-a); the
+    # partner itself and its policies live in Partner Management.
     partner_id: Mapped[str] = mapped_column(String, index=True)
     purpose: Mapped[dict] = mapped_column(JSONB)
     # Union of all requested scopes (for a grants request too).
     requested_scopes: Mapped[list] = mapped_column(JSONB, default=list)
-    # Requested grants: [{"data_controller", "data_scopes", "partner_binding_id"}].
+    # Requested grants: [{"data_controller", "data_scopes", "policy_version"}]
+    # (the version of the partner's policy the request was checked against).
     # NULL for a legacy single-controller request.
     grants: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     valid_from: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -68,9 +70,11 @@ class ConsentRequest(BaseORMModelWithId):
 
     # ── Partner portal (consent scenario 1); NULL for other requests ──
     method: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
-    # Display label of the use case the request was made for (e.g.
-    # loan-profile@1); the grants are still what is asked for.
-    use_case: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # The consent template the request was made from (its code, e.g.
+    # loan-profile@1), a label. Exchange role: the request is made FROM the
+    # template (its purpose, scopes and limits come from the template source).
+    # Otherwise a display label; the grants are what is asked for.
+    template: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     # The partner user (preferred_username in the partner realm) and partner.
     created_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     partner_audience: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
@@ -79,21 +83,6 @@ class ConsentRequest(BaseORMModelWithId):
     verified_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     verification_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-
-    # ── OTP consent (method "otp"); NULL for other requests ──
-    # Only a salted hash of the code is stored.
-    otp_hash: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-    otp_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    otp_attempts: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=0)
-    otp_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    otp_channel: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    otp_destination: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    otp_provider: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    otp_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    # Across every code issued for the request; a resend does not reset them.
-    otp_send_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=0)
-    otp_last_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    otp_failures_total: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=0)
 
 
 class EvidenceKind(str, Enum):
@@ -174,6 +163,29 @@ class ConsentArtefact(BaseORMModelWithId):
     __tablename__ = "consent_artefacts"
     __table_args__ = (
         UniqueConstraint("object_jti", "controller_id", name="uq_artefact_jti_controller"),
+        # Consent by lookup (/validate, caller-terms mode): active consents by
+        # (partner, subject, purpose code), latest valid_until first. Also
+        # created by migrate for existing databases.
+        Index(
+            "ix_consent_artefacts_purpose_lookup",
+            "partner_id", "subject_id_type", "subject_id_value",
+            text("(purpose ->> 'code')"), text("valid_until DESC"),
+            postgresql_where=text("status = 'active'"),
+        ),
+        # Consent by lookup at a registry: active consents by
+        # (partner, subject, data controller), latest valid_until first.
+        Index(
+            "ix_consent_artefacts_controller_lookup",
+            "partner_id", "subject_id_type", "subject_id_value", "controller_id",
+            text("valid_until DESC"),
+            postgresql_where=text("status = 'active'"),
+        ),
+        # Consent by lookup by one of the subject's other identifiers
+        # (subject_identifiers @> [{"type", "value"}]).
+        Index(
+            "ix_consent_artefacts_subject_identifiers", "subject_identifiers",
+            postgresql_using="gin", postgresql_ops={"subject_identifiers": "jsonb_path_ops"},
+        ),
     )
 
     subject_id_type: Mapped[str] = mapped_column(String(50), index=True)
@@ -181,6 +193,7 @@ class ConsentArtefact(BaseORMModelWithId):
     # Other identifiers of the subject (from its request), e.g. the Farmer ID.
     subject_identifiers: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     controller_id: Mapped[Optional[str]] = mapped_column(String(255), index=True, nullable=True)
+    # The partner the consent was given to: its audience (e.g. bank-a).
     partner_id: Mapped[str] = mapped_column(String, index=True)
 
     purpose: Mapped[dict] = mapped_column(JSONB)
@@ -192,7 +205,13 @@ class ConsentArtefact(BaseORMModelWithId):
     valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
     source: Mapped[str] = mapped_column(String(20), default=ArtefactSource.embedded.value)
+    # Version of the partner's policy in Partner Management the decision used.
     policy_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # The PM policy applied: PM's id of that version, and its key as
+    # kind:key ("data_controller:farmer-registry"; "template:loan-profile@1"
+    # for terms sent by a token presenter).
+    policy_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    policy_ref: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
     auth_context_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     # Idempotency / replay: the jti of the embedded object that produced this
@@ -201,7 +220,8 @@ class ConsentArtefact(BaseORMModelWithId):
     # its own decision.
     object_jti: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     # Originated grants consent: [{"data_controller", "data_scopes",
-    # "effective_data_scopes", "partner_binding_id", "policy_version"}].
+    # "granted_scopes", "effective_data_scopes", "policy_version", "policy_id",
+    # "policy_ref"}].
     grants: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     # Originated consent: how the subject confirmed, e.g. {"method": "assisted",
     # "evidence": ["signed_form"], "verified_by", "verified_at",
@@ -209,6 +229,10 @@ class ConsentArtefact(BaseORMModelWithId):
     assurance: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     # The consent request it was originated from (NULL for embedded/receipt).
     consent_request_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    # Exchange role: the consent template (its code) the consent was made
+    # from, a label for display and audit; the purpose and grants are what
+    # the consent is for. NULL for every other consent.
+    template: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     status: Mapped[str] = mapped_column(String(20), default=ArtefactStatus.active.value, index=True)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -238,3 +262,6 @@ class RevocationRecord(BaseORMModelWithId):
     consent_id: Mapped[str] = mapped_column(String, index=True)
     originated_by: Mapped[str] = mapped_column(String(20))  # subject | controller | partner
     reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # The staff user who revoked it on the subject's request (staff API);
+    # NULL when the caller revoked it itself.
+    revoked_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

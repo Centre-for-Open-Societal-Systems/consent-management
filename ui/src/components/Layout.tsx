@@ -1,6 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { BadgeCheck, FileSearch, Handshake, LogOut, ShieldCheck, Stamp } from "lucide-react";
-import { currentUser, isAdmin, isApprover, isDevMode, logout } from "../auth";
+import { BadgeCheck, ExternalLink, FileSearch, Handshake, LogOut } from "lucide-react";
+import { currentUser, getConfig, isAdmin, isApprover, isDevMode, logout } from "../auth";
 import "./Layout.css";
 
 // The OpenG2P shell, as in the Master Data UI and the partner portal: a black
@@ -8,10 +8,17 @@ import "./Layout.css";
 // the user at the bottom.
 const navClass = ({ isActive }: { isActive: boolean }) => `nav-item${isActive ? " active" : ""}`;
 
+// Landing page: Consent Approvals (approvers act there; admins read).
+export function homePath(): string {
+  return "/verifications";
+}
+
 export default function Layout() {
   const admin = isAdmin();
   const approver = isApprover();
-  const home = admin ? "/partners" : approver ? "/verifications" : "/my/consents";
+  const home = homePath();
+  // Partners and their access policies live in Partner Management.
+  const pmUrl = getConfig().partnerManagementUiUrl?.trim();
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -20,30 +27,29 @@ export default function Layout() {
           <span className="brand-product">Consent Manager</span>
         </NavLink>
         <nav className="nav">
-          {admin && (
-            <NavLink to="/partners" className={navClass}>
-              <Handshake size={18} /> Partner policies
-            </NavLink>
-          )}
-          {approver && (
-            <NavLink to="/approvals" className={navClass}>
-              <Stamp size={18} /> Approvals
-            </NavLink>
-          )}
           {/* Approvers act on assisted-consent verifications; admins may read. */}
           {(approver || admin) && (
             <NavLink to="/verifications" className={navClass}>
-              <BadgeCheck size={18} /> Consent verifications
+              <BadgeCheck size={18} /> Consent Approvals
             </NavLink>
           )}
           {admin && (
             <NavLink to="/decisions" className={navClass}>
-              <FileSearch size={18} /> Decisions
+              <FileSearch size={18} /> Access Log
             </NavLink>
           )}
-          <NavLink to="/my/consents" className={navClass}>
-            <ShieldCheck size={18} /> My Consents
-          </NavLink>
+          {admin && pmUrl && (
+            <a
+              href={pmUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="nav-item"
+              title="Partners and their access policies are managed in Partner Management (opens in a new tab)"
+            >
+              <Handshake size={18} /> Partners &amp; policies
+              <ExternalLink size={14} className="nav-external" aria-label="opens in a new tab" />
+            </a>
+          )}
         </nav>
         <div className="sidebar-user">
           {isDevMode() && <span className="dev-pill">dev</span>}

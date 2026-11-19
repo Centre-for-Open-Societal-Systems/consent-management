@@ -82,22 +82,54 @@ class ConsentObject(BaseModel):
         return None
 
 
+class CallerLimits(BaseModel):
+    """Caller-terms mode: limits on the consent, sent by the token presenter
+    (e.g. from the partner's grant). Each field optional; absent = no limit,
+    except ``allow_partner_consents`` (absent = false: a partner-signed
+    ``consent_jws`` is refused)."""
+
+    allowed_subject_id_types: Optional[List[str]] = None
+    # ISO 8601 duration, e.g. P1Y: the consent's validity may be no longer.
+    max_validity_duration: Optional[str] = Field(None, max_length=64, examples=["P1Y"])
+    allow_partner_consents: bool = False
+    allowed_signing_algs: Optional[List[str]] = None
+
+
 class RequestContext(BaseModel):
     requested_scopes: Optional[List[str]] = None
     # The subject the caller is about to search for. If it has the same type as
     # the consent's subject, the values must match (else deny subject_mismatch).
     # A different type is resolved by the registry, not CM.
     subject_id: Optional[SubjectId] = None
-    # The use the caller is about to make ({"code": ...}). Its code must equal
-    # the consent's purpose code (else deny purpose_mismatch).
-    purpose: Optional[Dict[str, Any]] = None
+    # Caller-terms mode (exchange role): a configured token presenter
+    # (receipt_presenters, e.g. the Composite) sends the terms of the request —
+    # the purpose (the consent's purpose code must equal it), requested_scopes
+    # (required: the ceiling per registry) and ``limits``. They replace the
+    # partner's per-registry scope policies. ``purpose`` from any other caller
+    # is ignored.
+    purpose: Optional[str] = Field(None, max_length=255, examples=["credit-assessment"])
+    limits: Optional[CallerLimits] = None
+    # Caller-terms mode: the consent template the terms come from, a label
+    # recorded for audit and display (policy_ref "template:<code>"); never
+    # used to decide.
+    template: Optional[str] = Field(None, max_length=255, examples=["loan-profile@1"])
+
+    @property
+    def has_terms(self) -> bool:
+        """Carries terms only a token presenter may send."""
+        return self.limits is not None or bool(self.template)
 
 
 class ValidateRequest(BaseModel):
     # The partner-signed consent object, as a compact JWS (header.payload.sig).
     # CM recovers the claims from the payload and verifies the signature against
     # the partner's Partner-Management key referenced by the JWS ``kid``.
-    # Exactly one of consent_jws / consent_id.
+    # At most one of consent_jws / consent_id. Neither: consent by lookup —
+    # the CM finds the consent it holds for request_context.subject_id and, in
+    # caller-terms mode, consent_partner_id and .purpose; otherwise partner_id
+    # and data_controller. A partner-signed consent is accepted only when the
+    # applicable policy (or, in caller-terms mode, limits) sets
+    # allow_partner_consents.
     consent_jws: Optional[str] = None
     # A stored (originated) consent, by its ID, and the partner that obtained
     # it (its audience, e.g. bank-a) — checked against the consent.
@@ -116,8 +148,8 @@ class ValidateRequest(BaseModel):
 
     @model_validator(mode="after")
     def _one_consent(self):
-        if bool(self.consent_jws) == bool(self.consent_id):
-            raise ValueError("give exactly one of 'consent_jws' or 'consent_id'")
+        if self.consent_jws and self.consent_id:
+            raise ValueError("give at most one of 'consent_jws' or 'consent_id'")
         return self
 
 
@@ -133,6 +165,11 @@ class DecisionLogResponse(BaseModel):
     reason_code: str
     detail: Optional[str] = None
     policy_version: Optional[int] = None
+    # The PM policy applied: PM's id of that version and its key (kind:key,
+    # e.g. data_controller:farmer-registry). Caller-terms mode: no PM policy;
+    # template:<code> when the presenter named the template.
+    policy_id: Optional[str] = None
+    policy_ref: Optional[str] = None
     receipt_jti: Optional[str] = None
     receipt_issuer: Optional[str] = None
     created_at: datetime
@@ -146,13 +183,14 @@ class Decision(BaseModel):
     receipt_id: Optional[str] = None
     # The consent's subject — registries check it against what they search.
     subject_id: Optional[SubjectId] = None
-    # The consent's purpose: the use the caller may make of the data.
-    purpose: Optional[Dict[str, Any]] = None
     # The controller this decision is for (the selected grant), when known.
     data_controller: Optional[str] = None
     effective_data_scopes: Optional[List[str]] = None
     valid_until: Optional[datetime] = None
     policy_version: Optional[int] = None
+    # The PM policy applied (permit): PM's id of that version and its kind:key.
+    policy_id: Optional[str] = None
+    policy_ref: Optional[str] = None
     evaluated_at: datetime
     # Exchange role, issue_receipts=true and permit: {data_controller: consent token JWS}.
     receipts: Optional[Dict[str, str]] = None

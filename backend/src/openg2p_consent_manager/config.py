@@ -17,6 +17,12 @@ class TrustedReceiptIssuer(BaseModel):
     status_url: str = ""
 
 
+DEFAULT_WITHDRAWAL_METHOD = (
+    "Ask the organisation operating this Consent Manager to revoke it "
+    "(consent ID {consent_id})."
+)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="consent_manager_", env_file=".env", extra="allow"
@@ -25,7 +31,7 @@ class Settings(BaseSettings):
     # Which API audience this instance serves — the platform's 4-API pattern
     # (staff / partner / beneficiary / agent). One image, one deployable per
     # audience; each mounts only its controllers and uses its own auth:
-    #   staff       — Keycloak (staff realm): policy bindings, approvals, decisions
+    #   staff       — Keycloak (staff realm): decisions, consent verifications
     #   partner     — PM keys (no Keycloak): the PDP /validate, status, receipts, JWKS
     #   beneficiary — Keycloak (beneficiary realm): /my/* + origination (deferred)
     #   all         — everything in one process (dev / back-compat default)
@@ -36,9 +42,9 @@ class Settings(BaseSettings):
         Consent Manager for OpenG2P.
 
         Acts as the Policy Decision Point (PDP) for outbound data sharing: it
-        verifies partner-signed consent objects against each partner's onboarded
-        policy and returns the effective set of fields a data holder (PEP) may
-        release. Also issues canonical consent artefacts and signed receipts.
+        verifies partner-signed consent objects against each partner's access
+        policy (in Partner Management) and returns the effective set of fields a
+        data holder (PEP) may release. Also issues canonical consent artefacts and signed receipts.
         """
     openapi_version: str = __version__
 
@@ -68,11 +74,10 @@ class Settings(BaseSettings):
     # is signing with the public bundled demo key (must be replaced for production).
     cm_signing_is_demo: bool = False
 
-    # NOTE: the data controller / module is a per-binding attribute
-    # (Partner.controller_id) — one shared CM serves many modules, and one
-    # partner may be bound to several controllers (one binding + policy each).
-    # /validate selects the consent's grant for the calling controller and
-    # evaluates it against that (audience, controller) binding's policy.
+    # NOTE: there is no global data controller: one shared CM serves many
+    # registries. /validate selects the consent's grant for the calling
+    # controller and evaluates it against the partner's policy for that
+    # controller in Partner Management.
 
     # Replay window for embedded consent objects (seconds). issued_at must be
     # within now ± this skew.
@@ -86,22 +91,15 @@ class Settings(BaseSettings):
     oidc_issuer: str = ""
     oidc_audience: str = ""
 
-    # ── Hot-path caching (pod-local, TTL) ───────────────────────────────────
-    # The partner row + its active policy change rarely but are read on every
-    # validate. Cached in-process per pod; staleness bounded by the TTL. (Keys
-    # are NOT part of this — they live in Partner Management, see below.)
-    partner_cache_ttl_sec: int = 60
-    partner_cache_enabled: bool = True
-
     # ── Partner public keys (Partner Management service) ────────────────────
     # Partner signing keys are no longer stored in CM. They are owned by the
     # Partner Management (PM) service and fetched from its unauthenticated
     # key-fetch API: GET {partner_mgmt_api_url}/keys/{reference_id}. CM caches
     # them per pod with the discipline PM's Cache-Control implies. A partner's
-    # PM reference is Partner.partner_mgmt_id (falling back to Partner.audience).
+    # PM id follows from its audience: bank-a → PARTNER_BANK_A.
     #
     # Empty partner_mgmt_api_url disables PM fetching — verification then fails
-    # closed (no keys → deny), which is the correct safe default until wired.
+    # closed (no keys / no policy → deny), the safe default until wired.
     partner_mgmt_api_url: str = ""  # e.g. http://commons-services-pm-partner-api
     # Crypto backend for verifying the partner's signed consent object (a compact
     # JWS). "partner-mgmt" verifies against keys fetched from PM via the shared
@@ -126,6 +124,22 @@ class Settings(BaseSettings):
     # HTTP timeout (seconds) for a single key fetch from PM.
     partner_key_fetch_timeout_seconds: float = 3.0
 
+    # ── Partner access policies (Partner Management service) ────────────────
+    # What a partner may access is its policy in PM, read from PM's internal
+    # policy API: GET {partner_mgmt_api_url}/policies/PARTNER_<AUD>
+    # ?data_controller=<controller> (a scope policy, one per controller).
+    # Cached per pod and per (partner, controller), as the keys are.
+    # Soft TTL: refresh window; capped by PM's Cache-Control max-age when smaller.
+    partner_policy_cache_ttl_seconds: int = 60
+    # Hard TTL: while PM is unreachable, serve its last answer up to this age,
+    # then fail closed (deny policy_unavailable).
+    partner_policy_hard_ttl_seconds: int = 21600
+    # Negative cache: remember a 404 (no such partner / policy) this long. Also
+    # the wait before retrying PM after a failed fetch.
+    partner_policy_negative_ttl_seconds: int = 30
+    # HTTP timeout (seconds) for a single policy fetch from PM.
+    partner_policy_fetch_timeout_seconds: float = 3.0
+
     # ── Caller authentication (Keycloak / OIDC bearer) ──────────────────────
     # Validates bearer tokens on protected endpoints against the Keycloak JWKS,
     # exactly like the AWE service. When auth_enabled is false (dev), tokens are
@@ -135,67 +149,22 @@ class Settings(BaseSettings):
     auth_jwks_url: str = ""  # usually issuer + /protocol/openid-connect/certs
     auth_audience: str = ""  # optional; empty disables the audience check
     auth_algorithms: list[str] = ["RS256", "ES256", "EdDSA"]
-    # Role (realm- or client-scoped) required for partner/policy admin endpoints.
+    # Role (realm- or client-scoped) required for the admin endpoints (decisions).
     auth_admin_role: str = "CONSENT_MANAGER_ADMIN"
     # Default subject id-type when a token omits the subject_id_type claim.
     subject_default_id_type: str = "national_id"
 
-    # Role required to act on AWE approval tasks via CM's proxy/inbox. Approvers
-    # log into CM (not AWE) and CM proxies task-list/decision calls to AWE with
-    # the approver's own JWT.
+    # Role required to verify assisted consents (approve / reject their evidence).
     auth_approver_role: str = "CONSENT_MANAGER_APPROVER"
 
-    # ── Approval Workflow Engine (AWE) integration ──────────────────────────
-    # Widening a partner's data-share POLICY is gated behind human approval in the
-    # shared, per-environment AWE. CM is a *caller service*: on a widening it
-    # submits an approval request and keeps the new policy version `pending`,
-    # flipping it `active` only when AWE delivers a terminal `request_approved`
-    # webhook. Approvers act in CM's OWN UI — CM proxies AWE's task-list/decision
-    # endpoints with the approver's JWT (AWE has no approver UI, only /admin).
-    #
-    # When awe_enabled is false (default), a widening policy activates immediately
-    # (no approval gate) — legacy behaviour.
-    awe_enabled: bool = False
-    # Whether the FIRST policy of a new binding (a grant from nothing) needs
-    # approval. On by default: with AWE on, a new binding denies everything until
-    # its first policy is approved. Set false to let the first policy go active
-    # immediately and gate only later widenings.
-    awe_gate_first_policy: bool = True
-    # Base URL of the environment's AWE, reachable from CM pods (e.g.
-    # https://awe.<baseDomain>). No trailing slash needed.
-    awe_base_url: str = ""
-    awe_http_timeout_seconds: float = 30.0
-    # AWE approval policy (workflow: stages/approvers/SLA) that governs data-share
-    # policy changes. Registered in AWE out-of-band. NB: distinct from CM's own
-    # data-share policy — this is the *approval* policy key.
-    awe_policy_change_policy_key: str = "consent-manager.policy_change.v1"
-    # CM→AWE auth for POST /v1/awe/requests. By default CM forwards the acting
-    # admin's own bearer (as the registry does): it carries the issuer users log
-    # in with, which is the one AWE trusts, and makes the admin the requester.
-    # Without a caller bearer (auth disabled, automation without a token) CM
-    # falls back to a service token: awe_static_token if set, else a Keycloak
-    # client-credentials grant from awe_token_url. That token's `iss` must be an
-    # issuer AWE accepts — use the EXTERNAL Keycloak URL when AWE validates the
-    # external issuer (the commons default).
-    awe_forward_caller_token: bool = True
-    awe_token_url: str = ""  # Keycloak token endpoint
-    awe_client_id: str = ""
-    awe_client_secret: str = ""
-    awe_static_token: str = ""
-    # Per-caller callback secret CM registered into the shared AWE DB. AWE looks
-    # the raw secret up by this id; CM holds the same raw secret to verify the
-    # HMAC on inbound webhooks. `callback_secret_id` is passed on every request.
-    awe_callback_secret_id: str = ""
-    awe_callback_hmac_secret: str = ""
-    # URL AWE should POST terminal webhooks back to, reachable FROM the AWE pod
-    # (in-cluster: http://<staff-api-service>/consent/v1/awe/webhooks/decision).
-    # Must resolve to the STAFF api, which serves the webhook route.
-    awe_callback_url: str = ""
-    # Reject webhooks whose signed timestamp is more than this far from now.
-    awe_webhook_max_skew_sec: int = 300
-    # The approver inbox lists open AND claimed tasks. AWE filters on one status
-    # per call, so CM fetches up to this many of each and merges them.
-    awe_inbox_fetch_limit: int = 100
+    # Consent receipt `withdrawal.method`: how the subject withdraws. Free text
+    # (an operator may name a contact or URL); {consent_id} is replaced by the
+    # consent's ID. Staff revoke on the subject's request (staff API).
+    # Empty → this default.
+    receipt_withdrawal_method: str = DEFAULT_WITHDRAWAL_METHOD
+    # Base URL of the beneficiary api, when it is deployed: its subject
+    # endpoint is then listed as an additional withdrawal method. Empty → none.
+    receipt_withdrawal_subject_api_url: str = ""
 
     # ── Agri Stack exchange (G2P-5719) — all off by default ─────────────────
     # Consent tokens (receipt_* settings): short-lived JWSs, one per registry
@@ -206,17 +175,37 @@ class Settings(BaseSettings):
     # are signed with the CM signing key above (same kid/alg, same JWKS).
     receipt_issuer: str = ""  # e.g. agri-stack-exchange-cm
     receipt_presenters: list[str] = []  # e.g. ["agri-composite"]
-    receipt_ttl_seconds: int = 900
+    # Token lifetime (capped by the consent's expiry). Short: a department
+    # checks tokens offline, so a revocation reaches issued tokens within it.
+    receipt_ttl_seconds: int = 300
     # Department role: exchange CMs whose consent tokens /validate accepts.
     # Empty → tokens are denied (receipt_issuer_not_trusted); nothing else changes.
     trusted_receipt_issuers: list[TrustedReceiptIssuer] = []
-    # Check each consent token's status at its issuer: always | never.
-    receipt_status_check: str = "always"
+    # Check each consent token's status at its issuer: never | always. Off by
+    # default: tokens are short-lived and single-use; a revocation applies at
+    # the exchange CM at once and to issued tokens within their lifetime.
+    # "always" adds a runtime call to the exchange CM per token.
+    receipt_status_check: str = "never"
     receipt_status_cache_ttl_seconds: int = 10
     receipt_jwks_cache_ttl_seconds: int = 300
     # Minimum interval between JWKS refetches for one issuer on an unknown kid.
     receipt_jwks_refresh_cooldown_seconds: int = 10
     receipt_fetch_timeout_seconds: float = 3.0
+    # Exchange role (receipt_issuer and receipt_presenters set): consents made
+    # here through the partner portal or the lifecycle API are made from a
+    # consent template offered to the partner — a code, title, purpose, the
+    # scopes per registry (required / optional) and limits (subject ID types,
+    # longest validity). Templates are read from a template source (at the
+    # Agri Stack Exchange, the Composite's internal endpoint), the URL of its
+    # template collection:
+    #   GET {consent_template_source_url}?partner=<audience>
+    #   GET {consent_template_source_url}/{code}?partner=<audience>
+    # Empty → such consents cannot be made (503, fail closed).
+    consent_template_source_url: str = ""  # e.g. http://agri-composite-api/composite/v1/internal/consent-templates
+    consent_template_fetch_timeout_seconds: float = 3.0
+    # How long a template answer is reused (per pod); capped by the source's
+    # Cache-Control max-age when smaller.
+    consent_template_cache_ttl_seconds: int = 60
 
     # ── Partner portal: partner users (consent scenario 1) — off by default ──
     # Partner users log in to the Keycloak `partner` realm (not the staff realm)
@@ -250,42 +239,6 @@ class Settings(BaseSettings):
     # Where a partner checks the CM's signature on its downloaded consent record
     # (the public JWKS of the CM partner API), named in the record's README.
     consent_record_jwks_url: str = ""
-
-    # ── OTP consent: partner raises a request, the CM sends the subject a code,
-    # the partner submits it and the consent is granted (partner portal API) ──
-    otp_provider: str = "fayda"  # fayda | internal (neither delivers the code yet)
-    otp_length: int = 6
-    otp_ttl_sec: int = 300
-    otp_max_attempts: int = 3  # wrong codes per issued code
-    # Budgets that a resend cannot reset:
-    otp_resend_cooldown_sec: int = 60  # between two codes for one request
-    otp_max_sends_per_request: int = 3  # the first code + 2 resends
-    otp_max_failures_per_request: int = 6  # wrong codes over all its codes; then cancelled
-    # Codes sent to one subject (any partner) within the window.
-    otp_subject_window_sec: int = 3600
-    otp_max_sends_per_subject: int = 10
-    # Mixed into the stored hash so a leaked row cannot be brute-forced offline.
-    # REQUIRED: no default, so no environment shares a public value. Without it
-    # no code is issued (503).
-    otp_salt: str = ""
-    otp_channel: str = "PHONE"
-    # TEST HARNESS (no SMS gateway yet): write each live code to the service
-    # log. Off by default; never on where real subjects exist. With neither
-    # this nor otp_publish_enabled there is no way to deliver a code, so none
-    # is issued (503).
-    otp_log_codes: bool = False
-    # TEST HARNESS (no SMS gateway yet): each issued OTP is also written as a
-    # JSON object to an S3/MinIO bucket under otp/, as in OAN Gen 1 / A2C, so a
-    # tester or partner sandbox can read it. Off by default; never on where
-    # real subjects exist - anything that can read the bucket reads live OTPs.
-    otp_publish_enabled: bool = False
-    otp_publish_bucket: str = "a2c-webhook"
-    otp_publish_prefix: str = "otp/"
-    otp_publish_region: str = "us-east-1"
-    otp_publish_endpoint_url: str = ""  # e.g. http://minio:9000; empty = AWS
-    otp_publish_access_key: str = ""
-    otp_publish_secret_key: str = ""
-    otp_publish_id_type: str = "FIN"
 
     # ── Subject authentication with national ID (consent scenario 1, phase 2) ──
     # The subject (e.g. a farmer at the bank) proves who they are through an
@@ -334,3 +287,37 @@ class Settings(BaseSettings):
     # How long a started login may take (the state's lifetime).
     subject_auth_session_ttl_seconds: int = 300
     subject_auth_http_timeout_seconds: float = 10.0
+
+    # ── Assisted confirmation (consent scenario 0) ───────────────────────────
+    # Instead of a signed form and a Consent Approver: after the subject's
+    # national-ID login, the partner portal shows the consent's terms and one
+    # "I agree" tick makes the consent active at once. The weakest proof: off
+    # unless enabled here AND allowed by the partner's policy
+    # (allow_assisted_confirmation: at the Exchange on the use-case policy, read
+    # through the consent template; elsewhere on each scope policy). Needs
+    # subject_auth_enabled. The consent covers every scope requested; its
+    # validity is set here (capped by the policy or template), not by the
+    # partner user.
+    assisted_confirmation_enabled: bool = False
+    assisted_confirmation_validity_days: int = 30
+    # The national-ID login must be this recent when the tick is submitted.
+    assisted_confirmation_login_max_age_seconds: int = 600
+
+    # ── Master Data code lists (partner portal choices) ─────────────────────
+    # Purposes and subject ID types offered in the partner portal's request
+    # form, read from the Master Data Service's staff API
+    # (POST {mds_url}/catalogue/get_list_values) with a client-credentials
+    # token of the CM's own Keycloak client (never the user's token), as
+    # Partner Management does. A loaded list is enforced on portal requests;
+    # a list absent from the country's Master Data (G2P-CAT-404), an empty
+    # mds_url or list code, or Master Data unreachable = free text (accepted).
+    mds_url: str = ""  # e.g. http://commons-services-master-data-api
+    mds_token_url: str = ""  # Keycloak token endpoint; empty = no token sent
+    mds_client_id: str = ""
+    mds_client_secret: str = ""
+    mds_purpose_list_code: str = "CONSENT_PURPOSE"
+    mds_subject_id_type_list_code: str = "SUBJECT_ID_TYPE"
+    # How long a list read is reused; a failed read is retried after
+    # min(this, 30) seconds.
+    mds_cache_ttl: int = 300
+    mds_timeout: float = 5.0

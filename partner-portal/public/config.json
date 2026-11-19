@@ -1,6 +1,5 @@
 {
   "apiBaseUrl": "",
-  "compositeUrl": "",
   "keycloak": {
     "url": "",
     "realm": "partner",

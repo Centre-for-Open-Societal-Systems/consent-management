@@ -1,37 +1,37 @@
 from .assisted_service import AssistedConsentService, artefact_status
-from .awe_client import AweClient, AweClientError
-from .awe_webhook_service import AweWebhookService, WebhookError
 from .consent_record_service import ConsentRecordService
 from .consent_service import ConsentService
 from .crypto_service import CryptoService
 from .evidence_service import EvidenceError, EvidenceService
 from .exchange_service import ExchangeService
+from .master_data_client import CodeList, MasterDataClient
 from .lifecycle_service import LifecycleError, LifecycleService
-from .otp_consent_service import OtpConsentService
-from .otp_publisher import OtpPublisher
-from .otp_service import OtpError, OtpService
-from .partner_service import (
-    PartnerConflict,
-    PartnerService,
-    PolicyNotResubmittable,
-    PolicyPending,
-)
+from .partner_service import PartnerRef, PartnerService
+from .pm_policy_client import PmPolicy, PmPolicyClient, PolicyUnavailable, pm_partner_id
 from .policy_service import PolicyResult, PolicyService
 from .receipt_service import ReceiptService
 from .subject_auth_service import SubjectAuthService
+from .template_client import (
+    ConsentTemplate,
+    ConsentTemplateClient,
+    TemplateLimits,
+    TemplateSourceUnavailable,
+)
 from .verification_service import VerificationService
 
 __all__ = [
+    "ConsentTemplate",
+    "ConsentTemplateClient",
+    "TemplateLimits",
+    "TemplateSourceUnavailable",
     "CryptoService",
     "ExchangeService",
-    "AweClient",
-    "AweClientError",
-    "AweWebhookService",
-    "WebhookError",
     "PartnerService",
-    "PartnerConflict",
-    "PolicyPending",
-    "PolicyNotResubmittable",
+    "PartnerRef",
+    "PmPolicyClient",
+    "PmPolicy",
+    "PolicyUnavailable",
+    "pm_partner_id",
     "PolicyService",
     "PolicyResult",
     "ReceiptService",
@@ -40,13 +40,11 @@ __all__ = [
     "ConsentService",
     "ConsentRecordService",
     "LifecycleService",
+    "MasterDataClient",
+    "CodeList",
     "LifecycleError",
     "EvidenceService",
     "EvidenceError",
     "AssistedConsentService",
-    "OtpService",
-    "OtpPublisher",
-    "OtpError",
-    "OtpConsentService",
     "artefact_status",
 ]

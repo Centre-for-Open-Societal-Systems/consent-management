@@ -1,13 +1,11 @@
 """Single consent, one grant per registry (G2P-5719).
 
 Covers /validate with `grants` and with legacy single-controller consents,
-per-(audience, controller) bindings and policies, replay per (jti, controller),
-subject mismatch, the migration of legacy bindings, and originated consents
-with grants.
+per-(partner, controller) policies in Partner Management, replay per (jti,
+controller), subject mismatch, and originated consents with grants.
 """
 import jwt
 import pytest
-from conftest import LEGACY_AUDIENCE, LEGACY_CONTROLLER, LEGACY_PARTNER_ID
 
 FR = "farmer-registry"
 CSR = "crop-sown-registry"
@@ -15,23 +13,10 @@ FR_SCOPES = ["farmer_personal_details", "farm_details"]
 CSR_SCOPES = ["farmer_reference", "crop_season", "measures"]
 
 
-def bind(call, partner, controller, scopes, **policy):
-    status, body = call("POST", "/consent/v1/partners", json={
-        "audience": partner.audience, "controller_id": controller,
-        "partner_mgmt_id": partner.pm_id, "name": partner.audience,
-    })
-    assert status == 201, body
-    binding_id = body["id"]
-    status, body = call("PUT", f"/consent/v1/partners/{binding_id}/policy", json={
-        "allowed_data_scopes": scopes,
-        "allowed_purposes": ["credit-assessment"],
-        "allowed_subject_id_types": ["FAYDA_FAN"],
-        "allowed_signing_algs": ["EdDSA"],
-        "max_validity_duration": "P1Y",
-        **policy,
-    })
-    assert status == 200 and body["status"] == "active", body
-    return binding_id
+def bind(pm, partner, controller, scopes, **policy):
+    """Give ``partner`` an active scope policy for ``controller`` in (the fake)
+    Partner Management. Returns its version."""
+    return pm.grant(partner.audience, controller, scopes, **policy)
 
 
 def validate(call, jws, data_controller=None, **ctx):
@@ -52,12 +37,12 @@ GRANTS = [
 
 
 @pytest.fixture
-def two_registry_partner(call, new_partner):
-    """A partner bound to FR and CSR, with a different policy for each. The FR
-    policy allows only personal details (not farm details)."""
+def two_registry_partner(pm, new_partner):
+    """A partner with a policy for FR and one for CSR in Partner Management. The
+    FR policy allows only personal details (not farm details)."""
     p = new_partner()
-    p.fr_binding = bind(call, p, FR, ["farmer_personal_details"])
-    p.csr_binding = bind(call, p, CSR, CSR_SCOPES)
+    bind(pm, p, FR, ["farmer_personal_details"])
+    bind(pm, p, CSR, CSR_SCOPES)
     return p
 
 
@@ -109,9 +94,10 @@ def test_controller_not_granted(call, two_registry_partner):
     assert dec["data_controller"] == CSR
 
 
-def test_grant_for_controller_partner_is_not_bound_to(call, new_partner):
+def test_grant_for_controller_without_policy_is_unknown_partner(call, pm, new_partner):
+    """PM answers 404 for a controller the partner has no policy for."""
     p = new_partner()
-    bind(call, p, FR, FR_SCOPES)
+    bind(pm, p, FR, FR_SCOPES)
     jws = p.sign(p.claims(grants=GRANTS))
     assert validate(call, jws, FR)["decision"] == "permit"
     dec = validate(call, jws, CSR)
@@ -177,9 +163,9 @@ def test_known_jti_reused_for_a_different_consent_is_denied(call, two_registry_p
 # ── legacy consent ────────────────────────────────────────────────────────────
 
 
-def test_legacy_consent_still_permits(call, new_partner):
+def test_legacy_consent_still_permits(call, pm, new_partner):
     p = new_partner()
-    bind(call, p, FR, FR_SCOPES)
+    bind(pm, p, FR, FR_SCOPES)
     claims = p.claims(data_controller=FR, data_scopes=FR_SCOPES)
     dec = validate(call, p.sign(claims))  # no data_controller in the request
     assert dec["decision"] == "permit", dec
@@ -191,10 +177,10 @@ def test_legacy_consent_still_permits(call, new_partner):
     assert validate(call, p.sign(claims), FR)["decision"] == "permit"
 
 
-def test_legacy_consent_with_mismatched_data_controller(call, new_partner):
+def test_legacy_consent_with_mismatched_data_controller(call, pm, new_partner):
     p = new_partner()
-    bind(call, p, FR, FR_SCOPES)
-    bind(call, p, CSR, CSR_SCOPES)
+    bind(pm, p, FR, FR_SCOPES)
+    bind(pm, p, CSR, CSR_SCOPES)
     jws = p.sign(p.claims(data_controller=FR, data_scopes=FR_SCOPES))
     dec = validate(call, jws, CSR)
     assert dec["decision"] == "deny"
@@ -285,94 +271,55 @@ def test_subject_mismatch(call, two_registry_partner):
     assert dec["decision"] == "deny" and dec["reason_code"] == "subject_mismatch"
 
 
-# ── bindings: one partner, several controllers ───────────────────────────────
+# ── policies: one partner, several controllers ───────────────────────────────
 
 
-def test_partner_bound_to_two_controllers_with_different_policies(
-    call, two_registry_partner
-):
+def test_partner_with_two_controller_policies(call, pm, two_registry_partner):
     p = two_registry_partner
-    status, rows = call("GET", "/consent/v1/partners", params={"audience": p.audience})
-    assert status == 200
-    assert sorted(r["controller_id"] for r in rows) == [CSR, FR]
-    assert {r["partner_mgmt_id"] for r in rows} == {p.pm_id}
-
-    _, fr_pol = call("GET", f"/consent/v1/partners/{p.fr_binding}/policy")
-    _, csr_pol = call("GET", f"/consent/v1/partners/{p.csr_binding}/policy")
-    assert fr_pol["allowed_data_scopes"] == ["farmer_personal_details"]
-    assert csr_pol["allowed_data_scopes"] == CSR_SCOPES
-
-    # Widening FR's policy changes FR only (and takes effect at once: cache
-    # invalidated for that binding).
-    status, body = call("PUT", f"/consent/v1/partners/{p.fr_binding}/policy", json={
-        "allowed_data_scopes": FR_SCOPES, "allowed_signing_algs": ["EdDSA"],
-    })
-    assert status == 200 and body["version"] == 2
     jws = p.sign(p.claims(grants=GRANTS))
-    assert validate(call, jws, FR)["effective_data_scopes"] == sorted(FR_SCOPES)
+    fr = validate(call, jws, FR)
+    assert fr["effective_data_scopes"] == ["farmer_personal_details"]
+    assert fr["policy_version"] == 1
+
+    # A new FR policy version in PM changes FR only.
+    assert bind(pm, p, FR, FR_SCOPES) == 2
+    jws = p.sign(p.claims(grants=GRANTS))
+    fr = validate(call, jws, FR)
+    assert fr["effective_data_scopes"] == sorted(FR_SCOPES)
+    assert fr["policy_version"] == 2
     assert validate(call, jws, CSR)["effective_data_scopes"] == sorted(CSR_SCOPES)
 
-    # Suspending the CSR binding denies CSR only.
-    status, _ = call("PATCH", f"/consent/v1/partners/{p.csr_binding}", json={"status": "suspended"})
-    assert status == 200
+    # Revoking the CSR policy in PM denies CSR only.
+    pm.revoke(p.audience, CSR)
     jws = p.sign(p.claims(grants=GRANTS))
     assert validate(call, jws, CSR)["reason_code"] == "unknown_partner"
     assert validate(call, jws, FR)["decision"] == "permit"
 
 
-def test_binding_conflicts(call, two_registry_partner):
+def test_records_store_audience_and_policy_version(call, run, two_registry_partner):
+    from sqlalchemy import select
+
+    from openg2p_consent_manager.db import async_session
+    from openg2p_consent_manager.models import ConsentArtefact, DecisionLog
+
     p = two_registry_partner
-    # Same (audience, controller) twice.
-    status, body = call("POST", "/consent/v1/partners", json={
-        "audience": p.audience, "controller_id": FR, "partner_mgmt_id": p.pm_id,
-    })
-    assert status == 409, body
-    # A third controller with another PM identity for the same audience.
-    status, body = call("POST", "/consent/v1/partners", json={
-        "audience": p.audience, "controller_id": "livestock-registry",
-        "partner_mgmt_id": "SOMEONE_ELSE",
-    })
-    assert status == 409, body
-    # Omitting partner_mgmt_id inherits it from the audience's other bindings.
-    status, body = call("POST", "/consent/v1/partners", json={
-        "audience": p.audience, "controller_id": "livestock-registry",
-    })
-    assert status == 201, body
-    assert body["partner_mgmt_id"] == p.pm_id
+    claims = p.claims(grants=GRANTS)
+    dec = validate(call, p.sign(claims), FR)
+    assert dec["decision"] == "permit"
 
+    async def rows():
+        async with async_session()() as s:
+            art = await s.get(ConsentArtefact, dec["consent_id"])
+            log = (await s.execute(
+                select(DecisionLog).where(DecisionLog.object_jti == claims["jti"])
+            )).scalars().first()
+            return art, log
 
-# ── migration of a pre-existing binding ───────────────────────────────────────
-
-
-def test_migrated_legacy_binding(call, new_partner):
-    """A partner created before the migration keeps working, and can be bound to
-    a second controller with its own policy."""
-    p = new_partner(audience=LEGACY_AUDIENCE, pm_id="PM_LEGACY")
-
-    dec = validate(call, p.sign(p.claims(data_controller=LEGACY_CONTROLLER,
-                                         data_scopes=["farm_details"])))
-    assert dec["decision"] == "permit", dec
-    assert dec["data_controller"] == LEGACY_CONTROLLER
-
-    status, body = call("POST", "/consent/v1/partners", json={
-        "audience": LEGACY_AUDIENCE, "controller_id": CSR,
-    })
-    assert status == 201, body
-    assert body["partner_mgmt_id"] == "PM_LEGACY"
-    status, _ = call("PUT", f"/consent/v1/partners/{body['id']}/policy", json={
-        "allowed_data_scopes": ["crop_season"], "allowed_signing_algs": ["EdDSA"],
-    })
-    assert status == 200
-
-    jws = p.sign(p.claims(grants=GRANTS))
-    fr = validate(call, jws, FR)
-    csr = validate(call, jws, CSR)
-    assert fr["effective_data_scopes"] == sorted(FR_SCOPES)
-    assert csr["effective_data_scopes"] == ["crop_season"]
-    assert fr["consent_id"] != csr["consent_id"]
-
-    status, rows = call("GET", "/consent/v1/partners", params={"audience": LEGACY_AUDIENCE})
-    assert {r["id"] for r in rows} >= {LEGACY_PARTNER_ID, body["id"]}
+    art, log = run(rows())
+    assert art.partner_id == p.audience and art.policy_version == 1
+    assert log.partner_id == p.audience and log.policy_version == 1
+    status, receipt = call("GET", f"/consent/v1/receipts/{dec['receipt_id']}")
+    assert status == 200 and receipt["third_parties"] == [p.audience]
 
 
 def test_migration_is_idempotent(env, run):
@@ -391,7 +338,7 @@ def test_originated_consent_with_grants(call, two_registry_partner):
     p = two_registry_partner
     status, req = call("POST", "/consent/v1/consent-requests", json={
         "subject_id": {"type": "FAYDA_FAN", "value": "123456789012"},
-        "partner_id": p.fr_binding,  # any binding of the partner
+        "partner_id": p.audience,
         "purpose": {"code": "credit-assessment"},
         "grants": [
             {"data_controller": FR, "data_scopes": ["farmer_personal_details"]},
@@ -420,28 +367,38 @@ def test_originated_consent_with_grants(call, two_registry_partner):
     grants = {g["data_controller"]: g for g in art["grants"]}
     assert grants[FR]["effective_data_scopes"] == ["farmer_personal_details"]
     assert grants[CSR]["effective_data_scopes"] == ["crop_season"]
+    assert grants[FR]["policy_version"] == 1 and "partner_binding_id" not in grants[FR]
     assert art["effective_data_scopes"] == ["crop_season", "farmer_personal_details"]
+    assert art["partner_id"] == p.audience
 
 
-def test_originated_grants_rejects_unbound_controller(call, new_partner):
+def test_originated_grants_rejects_controller_without_policy(call, pm, new_partner):
     p = new_partner()
-    binding = bind(call, p, FR, FR_SCOPES)
+    bind(pm, p, FR, FR_SCOPES)
     status, body = call("POST", "/consent/v1/consent-requests", json={
         "subject_id": {"type": "FAYDA_FAN", "value": "1"},
-        "partner_id": binding,
+        "partner_id": p.audience,
         "purpose": {"code": "credit-assessment"},
         "grants": GRANTS,
     })
     assert status == 422, body
 
 
-def test_originated_legacy_request_unchanged(call, new_partner):
+def test_originated_single_controller_request(call, pm, new_partner):
     p = new_partner()
-    binding = bind(call, p, FR, FR_SCOPES)
+    bind(pm, p, FR, FR_SCOPES)
+    status, body = call("POST", "/consent/v1/consent-requests", json={
+        "subject_id": {"type": "FAYDA_FAN", "value": "42"},
+        "partner_id": p.audience,
+        "purpose": {"code": "credit-assessment"},
+        "requested_scopes": FR_SCOPES,
+    })
+    assert status == 400, body  # requested_scopes needs data_controller
     status, req = call("POST", "/consent/v1/consent-requests", json={
         "subject_id": {"type": "FAYDA_FAN", "value": "42"},
-        "partner_id": binding,
+        "partner_id": p.audience,
         "purpose": {"code": "credit-assessment"},
+        "data_controller": FR,
         "requested_scopes": FR_SCOPES,
     })
     assert status == 201, req

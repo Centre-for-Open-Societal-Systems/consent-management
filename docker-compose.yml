@@ -34,16 +34,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    networks:
-      default:
-        # The name ui/nginx.conf proxies /consent/ to.
-        aliases:
-          - consent-manager-api
 
   frontend:
-    build: ./ui
+    build: ./frontend
     ports:
-      - "3000:8080"  # ui/nginx.conf listens on 8080
+      - "3000:80"
     depends_on:
       - backend
 

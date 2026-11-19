@@ -20,7 +20,8 @@ data:
         "clientId": {{ .Values.clientId | quote }}
       },
       "adminRole":    {{ tpl .Values.global.consentManagerAdminRole $ | quote }},
-      "approverRole": {{ tpl .Values.global.consentManagerApproverRole $ | quote }}
+      "approverRole": {{ tpl .Values.global.consentManagerApproverRole $ | quote }},
+      "partnerManagementUiUrl": {{ tpl (.Values.global.partnerManagementUiUrl | default "") $ | quote }}
     }
 {{- end -}}
 {{- end }}

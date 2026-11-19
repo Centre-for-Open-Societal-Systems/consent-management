@@ -68,7 +68,7 @@ class ConsentRecordService(BaseService):
 
     async def build(self, audience: str, consent_id: str) -> Optional[tuple[str, bytes]]:
         """(file name, ZIP bytes) for the partner's consent; None if not theirs."""
-        artefact, use_cases = await self.assisted.get_consent(audience, consent_id)
+        artefact, templates = await self.assisted.get_consent(audience, consent_id)
         if artefact is None:
             return None
         async with async_session()() as session:
@@ -136,7 +136,7 @@ class ConsentRecordService(BaseService):
             "subject_id": {"type": artefact.subject_id_type, "value": artefact.subject_id_value},
             "subject_identifiers": artefact.subject_identifiers or [],
             "purpose": artefact.purpose or {},
-            "use_case": use_cases.get(artefact.consent_request_id),
+            "template": artefact.template or templates.get(artefact.consent_request_id),
             "grants": [
                 {"data_controller": g.get("data_controller"),
                  "data_scopes": g.get("effective_data_scopes") or []}
@@ -150,6 +150,18 @@ class ConsentRecordService(BaseService):
             "evidence": evidence_entries,
             "subject_authenticated": bool(assurance.get("subject_authenticated")),
             "subject_authentication": assurance.get("subject_authentication"),
+            # How the subject agreed: "assisted" (signed form, checked by the
+            # CM) or "assisted_confirmation" (one "I agree" after the login,
+            # with the statement shown; no form, no check).
+            "how_given": assurance.get("method"),
+            **(
+                {"confirmation": {
+                    "statement": assurance.get("statement"),
+                    "statement_sha256": assurance.get("statement_sha256"),
+                    "confirmed_at": assurance.get("confirmed_at"),
+                }}
+                if assurance.get("method") == "assisted_confirmation" else {}
+            ),
             # When the CM checked the evidence; the staff member is in the CM's
             # own audit trail, not in the partner's copy.
             "verified_by": "Consent Manager",
@@ -218,6 +230,12 @@ def _summary(s: dict) -> str:
         f"{', ' + e(str(auth['authenticated_at'])) if auth.get('authenticated_at') else ''}"
         if s["subject_authenticated"] else "No (signed form only)"
     )
+    confirmation = s.get("confirmation")
+    how = (
+        "Assisted confirmation: the person agreed to the statement below after the "
+        "national-ID login (no signed form, no check by the Consent Manager)"
+        if confirmation else "Signed form, checked by the Consent Manager"
+    )
     rows = "".join([
         row("Consent ID", f"<code>{e(s['consent_id'])}</code>"),
         row("Status", e(s["status"])),
@@ -225,10 +243,12 @@ def _summary(s: dict) -> str:
         row("Subject", f"{e(s['subject_id']['type'])} {e(s['subject_id']['value'])}"),
         *[row(i["type"], e(i["value"])) for i in s.get("subject_identifiers") or []],
         row("Purpose", e(str(purpose.get("code") or purpose))),
-        row("Use case", e(s["use_case"] or "—")),
+        row("Consent template", e(s["template"] or "—")),
         row("Data", f"<ul>{grants}</ul>"),
         row("Valid", f"{e(s['valid_from'] or '—')} to {e(s['valid_until'] or '—')}"),
         row("Person authenticated", authenticated),
+        row("How given", e(how)),
+        *([row("Statement agreed", e(confirmation.get("statement") or "—"))] if confirmation else []),
         row("Evidence", f"<ul>{evidence}</ul>"),
         row("Verified by the Consent Manager", e(s["verified_at"] or "—")),
         row("Receipt SHA-256", f"<code>{e(s['receipt']['sha256'])}</code>" if s.get("receipt") else "—"),

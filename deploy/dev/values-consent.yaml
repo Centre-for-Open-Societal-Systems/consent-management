@@ -1,0 +1,24 @@
+# Consent Manager settings for the New Dev commons-services release (OAN chart
+# openg2p-commons-services, namespace `commons`, the registries cluster). Our
+# own images from ECR replace the stock ones.
+#
+# The Jenkins deploy adds .build/images.yaml (ci/deploy-dev.sh): for each image
+# the repository eoan/consent-management/<image>-<CM version> and the tag it
+# just built, pinned by digest (<version>-<branch>.<build>@sha256:...), so a
+# rollout always happens and a rollback returns to an exact image. Staging and
+# UAT do not use this file; they pin a release version.
+#
+# Everything else in the release (hostnames, secrets, Keycloak, databases) is
+# kept as installed: the pipeline upgrades with --reuse-values.
+openg2p-consent-manager:
+  consentManagerApi:
+    image:
+      pullPolicy: Always
+  ui:
+    image:
+      pullPolicy: Always
+  sanity:
+    image:
+      pullPolicy: Always
+consentPartnerPortal:
+  enabled: true

@@ -1,0 +1,50 @@
+# CI deploy identity for upgrading the dev `commons-services` release.
+# Namespace `commons` only. Apply on the New Dev node (registry-development,
+# 10.0.1.58, the registries cluster):
+#   sudo -E /var/lib/rancher/rke2/bin/kubectl apply -f consent-commons-rbac.yaml
+#
+# Then build the kubeconfig there and upload it to Jenkins as the "Secret file"
+# credential consent-dev-kubeconfig (Jenkinsfile DEV_KUBECONFIG_CRED_ID); the
+# token is never printed:
+#   K="sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n commons"
+#   umask 077; T=$($K get secret consent-ci-token -o jsonpath='{.data.token}' | base64 -d)
+#   CA=$($K get secret consent-ci-token -o jsonpath='{.data.ca\.crt}')
+#   printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: newdev\n  cluster:\n    server: https://10.0.1.58:6443\n    certificate-authority-data: %s\nusers:\n- name: consent-ci\n  user:\n    token: %s\ncontexts:\n- name: consent-ci\n  context: {cluster: newdev, user: consent-ci, namespace: commons}\ncurrent-context: consent-ci\n' "$CA" "$T" > ~/consent-dev-kubeconfig; unset T
+#   kubectl --kubeconfig ~/consent-dev-kubeconfig auth can-i patch deployments -n commons   # yes
+#   kubectl --kubeconfig ~/consent-dev-kubeconfig auth can-i get secrets -n farmer          # no
+#
+# This is broad on purpose: a Helm upgrade of commons-services must be able to
+# touch every kind the chart renders (ConfigMap, Secret, Service, ServiceAccount,
+# PVC, Deployment, Job, CronJob, Role, RoleBinding, ServiceMonitor, VirtualService)
+# and read/write Helm's release Secrets. That includes reading Secrets in
+# `commons`, so treat the Jenkins credential built from it as sensitive. It
+# cannot touch other namespaces, Nodes, ClusterRoles or CRDs. The pipeline's
+# manifest guard (ci/manifest_guard.py) is what keeps a build from changing
+# anything but the Consent Manager images.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: consent-ci, namespace: commons}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: consent-ci, namespace: commons}
+rules:
+  - apiGroups: ["", "apps", "batch", "autoscaling", "networking.k8s.io", "policy",
+                "networking.istio.io", "security.istio.io", "rbac.authorization.k8s.io",
+                "monitoring.coreos.com"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: consent-ci, namespace: commons}
+subjects: [{kind: ServiceAccount, name: consent-ci, namespace: commons}]
+roleRef: {kind: Role, name: consent-ci, apiGroup: rbac.authorization.k8s.io}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: consent-ci-token
+  namespace: commons
+  annotations: {kubernetes.io/service-account.name: consent-ci}
+type: kubernetes.io/service-account-token

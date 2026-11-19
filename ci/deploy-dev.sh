@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Upgrade the dev commons-services release so it runs this commit's Consent
-# Manager images. Called by the Jenkinsfile with KUBECONFIG set from the Jenkins
-# credential and IMAGE_TAG (12-char commit) in the environment.
+# Upgrade the New Dev commons-services release (namespace commons, the registries
+# cluster) so it runs this build's Consent Manager images. Called by the
+# Jenkinsfile with KUBECONFIG set from the Jenkins credential, IMAGE_TAG
+# (<version>-<branch>.<build>, ci/image_names.py) in the environment and
+# .build/{repository,digest}-<image> written by ci/build-push.sh.
 #
 # Safety, in order:
-#  1. the commons-services chart is the pinned, checksummed archive from oan-helm
+#  1. the chart is the version the release already runs (never a newer or older
+#     commons-services), fetched from oan-helm and checked against its SHA256SUMS
 #  2. that chart must still pin openg2p-consent-manager $CONSENT_CHART_PIN (1.0.2)
 #  3. a server-side dry run is compared with the live manifest; only image
 #     references on the consent-manager resources may change (ci/manifest_guard.py)
@@ -13,18 +16,33 @@
 #     the last `deployed` revision and the build fails
 set -euo pipefail
 
-: "${KUBECONFIG:?}" "${IMAGE_TAG:?}" "${HELM_CHART_NAME:?}" "${HELM_CHART_VERSION:?}" \
-  "${HELM_CHART_SHA256:?}" "${OAN_HELM_RAW:?}" "${COMMONS_RELEASE:?}" "${COMMONS_NAMESPACE:?}" \
-  "${CONSENT_CHART_PIN:?}" "${ECR_REGISTRY:?}"
+: "${KUBECONFIG:?}" "${IMAGE_TAG:?}" "${HELM_CHART_NAME:?}" "${OAN_HELM_RAW:?}" \
+  "${COMMONS_RELEASE:?}" "${COMMONS_NAMESPACE:?}" "${CONSENT_CHART_PIN:?}"
 NS=$COMMONS_NAMESPACE
 REL=$COMMONS_RELEASE
 WORK=.build
 mkdir -p "$WORK"
-CHART="$WORK/${HELM_CHART_NAME}-${HELM_CHART_VERSION}.tgz"
 
-# 1. pinned chart archive
-curl -fsSL -o "$CHART" "${OAN_HELM_RAW}/repository/${HELM_CHART_NAME}-${HELM_CHART_VERSION}.tgz"
-echo "${HELM_CHART_SHA256}  $CHART" | sha256sum -c -
+# Last good revision (for rollback) and the chart version it runs.
+if ! helm list -n "$NS" --deployed -q --filter "^${REL}\$" | grep -qx "$REL"; then
+    echo "ERROR: release $REL is not deployed in $NS; this pipeline only upgrades it" >&2
+    exit 1
+fi
+read -r PREV LIVE_CHART < <(helm list -n "$NS" --deployed --filter "^${REL}\$" -o json \
+    | python3 -c 'import json,sys; r=json.load(sys.stdin)[0]; print(r["revision"], r["chart"])')
+case "$LIVE_CHART" in
+    "${HELM_CHART_NAME}-"?*) HELM_CHART_VERSION=${LIVE_CHART#"${HELM_CHART_NAME}-"} ;;
+    *) echo "ERROR: release $REL runs chart '$LIVE_CHART', expected ${HELM_CHART_NAME}-<version>" >&2; exit 1 ;;
+esac
+echo "Last deployed revision: $PREV ($LIVE_CHART)"
+CHART="$WORK/${LIVE_CHART}.tgz"
+
+# 1. the live chart's archive, checked against oan-helm's published checksum
+curl -fsSL -o "$CHART" "${OAN_HELM_RAW}/repository/${LIVE_CHART}.tgz"
+curl -fsSL -o "$WORK/SHA256SUMS" "${OAN_HELM_RAW}/repository/SHA256SUMS"
+SUM=$(awk -v f="${LIVE_CHART}.tgz" '$2 == f || $2 == "*" f {print $1; exit}' "$WORK/SHA256SUMS")
+[ -n "$SUM" ] || { echo "ERROR: ${LIVE_CHART}.tgz is not in oan-helm repository/SHA256SUMS" >&2; exit 1; }
+echo "${SUM}  $CHART" | sha256sum -c -
 
 # 2. Consent Manager chart version must not move
 FOUND=$(helm show chart "$CHART" | awk '/name: openg2p-consent-manager/{f=1} f && /version:/{print $2; exit}')
@@ -33,39 +51,18 @@ if [ "$FOUND" != "$CONSENT_CHART_PIN" ]; then
     exit 1
 fi
 
-# Images built in this run, pinned by digest.
-dig() { cat "$WORK/digest-$1"; }
-cat > "$WORK/images.yaml" <<EOF
-openg2p-consent-manager:
-  consentManagerApi:
-    image:
-      tag: "dev-${IMAGE_TAG}@$(dig consent-manager-api)"
-  ui:
-    image:
-      tag: "dev-${IMAGE_TAG}@$(dig consent-manager-ui)"
-  sanity:
-    image:
-      tag: "dev-${IMAGE_TAG}@$(dig consent-manager-sanity)"
-consentPartnerPortal:
-  image:
-    digest: "$(dig consent-manager-partner-portal)"
-EOF
+# Images built in this run (eoan/consent-management/...), pinned by digest. The
+# live values supply the extraApis list (the partner api pins its own image).
+helm get values "$REL" -n "$NS" -a -o json > "$WORK/live-values.json"
+python3 ci/image_values.py "$WORK/live-values.json" "$WORK" "$IMAGE_TAG" > "$WORK/images.yaml"
+rm -f "$WORK/live-values.json"
 VALS="--reuse-values -f deploy/dev/values-consent.yaml -f $WORK/images.yaml"
 
-# Last good revision (for rollback) and the live manifest.
-PREV=""
-if helm list -n "$NS" --deployed -q --filter "^${REL}\$" | grep -qx "$REL"; then
-    PREV=$(helm status "$REL" -n "$NS" -o json | sed -n 's/.*"version":\([0-9][0-9]*\).*/\1/p' | head -1)
-else
-    echo "ERROR: release $REL is not deployed in $NS; this pipeline only upgrades it" >&2
-    exit 1
-fi
-echo "Last deployed revision: $PREV"
 helm get manifest "$REL" -n "$NS" > "$WORK/live-manifest.yaml"
 
 # 3. dry run against the server, then the guard
 helm upgrade "$REL" "$CHART" -n "$NS" $VALS --dry-run=server > "$WORK/dryrun.txt"
-GUARD_ONLY='/commons-services-cm-' python3 ci/manifest_guard.py "$WORK/live-manifest.yaml" "$WORK/dryrun.txt" "$WORK/guard-report.txt"
+GUARD_ONLY='/commons-services-cm-' GUARD_REVISION="$PREV" python3 ci/manifest_guard.py "$WORK/live-manifest.yaml" "$WORK/dryrun.txt" "$WORK/guard-report.txt"
 
 diag() {
     {

@@ -7,8 +7,12 @@ type: application
 #   develop  -> 0.0.0-develop.<run-number>
 #   N.N      -> N.N.0-develop.<run-number>
 #   N.N.N    -> N.N.N
-version: 0.0.0-develop
-appVersion: "develop"
+# Jenkins image tags start with it: <version>-<branch>.<build> (ci/image_names.py),
+# 0.0.0 like the registries.
+version: 0.0.0
+# The upstream OpenG2P Consent Manager these images track (commons-services pins
+# chart 1.0.2). It is part of every ECR image name: ci/image_names.py.
+appVersion: "1.0.2"
 dependencies:
   - name: common
     repository: https://openg2p.github.io/openg2p-helm

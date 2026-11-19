@@ -19,9 +19,19 @@ import sys
 # (e.g. GUARD_ONLY='/commons-services-cm-'). Anything else that changes blocks.
 ONLY = os.environ.get("GUARD_ONLY", "")
 
+# Optional: the live release revision N. Some commons-services Jobs carry the
+# revision in their name (commons-services-cm-kc-init-48-c9435ed8, ...-kc-sa-role-48),
+# so every upgrade renames them N -> N+1; with this set they count as the same Job.
+REVISION = os.environ.get("GUARD_REVISION", "")
+
 # Lines whose change is an image reference: `image: repo:tag@sha256:...`,
 # `tag:` / `digest:` values, or any line carrying a sha256 digest.
 ALLOWED = re.compile(r"^\s*(-\s*)?(image|imageTag|tag|digest):\s|@sha256:|^\s*digest:\s")
+
+# commons-services rolls a component's pods when its values change by hashing them
+# into this annotation. A re-render of the live revision can move the hash of any
+# component without a change of ours, so it alone never blocks (anywhere).
+CHECKSUM = re.compile(r"^\s*oan\.org/values-checksum:\s")
 
 
 def manifest_part(text):
@@ -32,9 +42,17 @@ def manifest_part(text):
     return text
 
 
+def without_revision(text):
+    """Replace a name's `-N` / `-N+1` revision part (before `-<hash8>` or at the name's end) with `-REV`."""
+    if not REVISION:
+        return text
+    numbers = "%d|%d" % (int(REVISION), int(REVISION) + 1)
+    return re.sub(r"(?m)(?<=[a-z0-9])-(?:%s)(?=-[0-9a-f]{8}\b|[\"']?\s*$)" % numbers, "-REV", text)
+
+
 def resources(text):
     out = {}
-    for chunk in re.split(r"(?m)^---\s*$", manifest_part(text)):
+    for chunk in re.split(r"(?m)^---\s*$", without_revision(manifest_part(text))):
         if not chunk.strip():
             continue
         kind = re.search(r"(?m)^kind:\s*(\S+)", chunk)
@@ -79,9 +97,12 @@ def main(argv):
             continue
         diff = [d for d in difflib.unified_diff(live[key].splitlines(), new[key].splitlines(), lineterm="", n=0)
                 if d[:1] in "+-" and not d.startswith(("+++", "---"))]
+        diff = [d for d in diff if not CHECKSUM.search(d[1:])]
         other = [d for d in diff if not ALLOWED.search(d[1:])]
         changed.append(key)
-        if ONLY and not re.search(ONLY, key):
+        if not diff:
+            lines.append("checksum %s" % key)
+        elif ONLY and not re.search(ONLY, key):
             bad = True
             lines.append("CHANGED  %s  (outside GUARD_ONLY=%s)" % (key, ONLY))
         elif other:

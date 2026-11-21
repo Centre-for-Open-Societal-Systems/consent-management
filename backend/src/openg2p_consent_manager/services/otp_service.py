@@ -18,6 +18,9 @@ _logger = logging.getLogger(_config.logging_default_logger_name)
 
 __all__ = ["OtpService", "OtpError", "OtpProvider"]
 
+#: OtpError reason when the SMS service did not answer clearly: the code may still arrive.
+UNCERTAIN_DELIVERY = "otp_delivery_unavailable"
+
 
 class OtpService(BaseService):
     def __init__(self, name="", **kwargs):
@@ -56,7 +59,18 @@ class OtpService(BaseService):
         if problem:
             _logger.error("OTP not issued for consent request %s: %s", request.id, problem)
             raise OtpError(503, "otp_unavailable", problem)
-        await self._provider.issue(request, destination)
+        try:
+            await self._provider.issue(request, destination)
+        except OtpError as exc:
+            if exc.reason == UNCERTAIN_DELIVERY:
+                # The SMS service may still send this code: count it, so the resend
+                # cooldown and the send budgets hold during an outage.
+                self._count_send(request)
+            raise
+        self._count_send(request)
+
+    @staticmethod
+    def _count_send(request) -> None:
         request.otp_send_count = (request.otp_send_count or 0) + 1
         request.otp_last_sent_at = datetime.now(timezone.utc)
 

@@ -11,12 +11,13 @@ Two providers, one interface:
 ``internal``
     The generic equivalent: a random code with no Fayda framing.
 
-Neither provider *delivers* anything yet (``delivers = False``): there is no
-SMS gateway. For testing, the code can be written to the service log
-(``otp_log_codes``) or to a bucket (``otp_publish_enabled``); with neither,
-OtpService refuses to issue. A real Fayda / SMS deployment plugs in by
-implementing ``issue`` and ``verify`` and setting ``delivers = True``; nothing
-above this file changes.
+Both providers deliver the code by SMS through the OAN Messaging Service when
+``oan_delivery_enabled`` is on and configured (``delivers`` is then true; see
+``otp_delivery``). A code that cannot be handed to OAN raises ``OtpError``, so
+the request is refused instead of waiting on a code nobody received. Without
+OAN, the code can be written to the service log (``otp_log_codes``) or to a
+bucket (``otp_publish_enabled``) for testing; with none of these, OtpService
+refuses to issue.
 """
 import hashlib
 import hmac
@@ -76,6 +77,25 @@ async def _publish(request, code: str, individual_id: str) -> None:
         _logger.warning("OTP publish skipped: %s", exc)
 
 
+async def _deliver(request, code: str, destination: str) -> bool:
+    """Send the code by SMS through OAN when configured. True when handed over;
+    raises OtpError when delivery is configured but fails."""
+    if not _config.oan_delivery_ready:
+        return False
+    from .otp_delivery import deliver_otp  # late: otp_delivery imports OtpError from here
+
+    await deliver_otp(request, code, destination)
+    return True
+
+
+class _DeliversWhenConfigured:
+    """``delivers`` follows the OAN settings, read at use time."""
+
+    @property
+    def delivers(self) -> bool:
+        return _config.oan_delivery_ready
+
+
 def _announce(request, code: str, destination: str, provider: str) -> None:
     """Say a code was issued. The code itself only with ``otp_log_codes``
     (test harness), since anything that reads the log could then use it."""
@@ -96,12 +116,11 @@ def _count_failure(request) -> OtpError:
     return OtpError(401, "otp_invalid", "incorrect OTP; %d attempt(s) remaining" % left)
 
 
-class FaydaOtpProvider:
+class FaydaOtpProvider(_DeliversWhenConfigured):
     """Fayda's rules, applied here rather than called over HTTP. The
     transaction IS the consent-request row, so it is as durable as the request."""
 
     name = "fayda"
-    delivers = False
 
     async def issue(self, request, destination: str) -> None:
         transaction_id = request.id
@@ -115,6 +134,8 @@ class FaydaOtpProvider:
         # What the code was bound TO; verify() re-derives the hash from it.
         request.otp_destination = destination
         request.otp_provider = self.name
+        if await _deliver(request, code, destination):
+            return  # sent by SMS; the test harnesses are not needed
         await _publish(request, code, destination)
         _announce(request, code, destination, self.name)
 
@@ -141,11 +162,10 @@ class FaydaOtpProvider:
         request.otp_verified_at = datetime.now(timezone.utc)
 
 
-class InternalOtpProvider:
+class InternalOtpProvider(_DeliversWhenConfigured):
     """A random code with no Fayda framing. The simplest thing that works."""
 
     name = "internal"
-    delivers = False
 
     @staticmethod
     def _hash(code: str, request_id: str) -> str:
@@ -163,6 +183,8 @@ class InternalOtpProvider:
         request.otp_channel = "log"
         request.otp_destination = destination
         request.otp_provider = self.name
+        if await _deliver(request, code, destination):
+            return  # sent by SMS; the test harnesses are not needed
         await _publish(request, code, destination)
         _announce(request, code, destination, self.name)
 

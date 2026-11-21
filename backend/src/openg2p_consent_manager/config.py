@@ -253,7 +253,7 @@ class Settings(BaseSettings):
 
     # ── OTP consent: partner raises a request, the CM sends the subject a code,
     # the partner submits it and the consent is granted (partner portal API) ──
-    otp_provider: str = "fayda"  # fayda | internal (neither delivers the code yet)
+    otp_provider: str = "fayda"  # fayda | internal (delivered by SMS when oan_delivery_enabled)
     otp_length: int = 6
     otp_ttl_sec: int = 300
     otp_max_attempts: int = 3  # wrong codes per issued code
@@ -286,6 +286,42 @@ class Settings(BaseSettings):
     otp_publish_access_key: str = ""
     otp_publish_secret_key: str = ""
     otp_publish_id_type: str = "FIN"
+
+    # ── OTP delivery by SMS through the OAN Messaging Service ───────────────
+    # Off by default. When on (with a base URL and token), every issued code is
+    # sent as one SMS (purpose "otp", expiring with the code itself), and an
+    # issue that cannot be delivered fails visibly instead of storing the code.
+    oan_delivery_enabled: bool = False
+    oan_base_url: str = ""  # e.g. https://oan-messaging.<env>  (no path)
+    oan_token: str = ""  # caller credential from the OAN operator; secret
+    oan_ca_bundle: str = ""  # optional CA bundle path for the OAN API
+    oan_timeout_seconds: float = 5.0
+    oan_max_attempts: int = 2  # client retries, same key and body
+    # Subject -> phone resolution. "map" reads oan_otp_phone_map (dev/staging test
+    # numbers only). A production resolver (the registered phone from the
+    # beneficiary API, approved by the identity owner) replaces it; see
+    # services/otp_delivery.py.
+    oan_phone_resolver: str = "map"
+    # JSON: {"<subject_id_value>": "0900000101"}
+    oan_otp_phone_map: str = ""
+
+    @property
+    def oan_otp_phones(self) -> dict:
+        import json
+
+        raw = (self.oan_otp_phone_map or "").strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except ValueError:  # never log the value: it holds phones
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @property
+    def oan_delivery_ready(self) -> bool:
+        """SMS delivery is switched on and has somewhere to send."""
+        return bool(self.oan_delivery_enabled and self.oan_base_url and self.oan_token)
 
     # ── Subject authentication with national ID (consent scenario 1, phase 2) ──
     # The subject (e.g. a farmer at the bank) proves who they are through an

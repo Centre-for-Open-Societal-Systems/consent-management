@@ -318,10 +318,39 @@ class Settings(BaseSettings):
             return {}
         return parsed if isinstance(parsed, dict) else {}
 
+    # ── OTP delivery by SMS straight to the 8028 gateway ────────────────────
+    # An alternative to the OAN Messaging Service for the OTP only (services/sms8028.py).
+    # Off by default. Never switch it on together with oan_delivery_enabled: the code
+    # would be sent twice, so that combination is refused (503).
+    sms8028_enabled: bool = False
+    sms8028_base_url: str = "https://8028.et:3400/sms-api/v1"
+    sms8028_client_secret: str = ""  # secret, from 8028
+    # The client certificate and key 8028 registered for us, as PEM text (or base64 of it);
+    # secrets. They are loaded from memory-only settings, never from the image.
+    sms8028_client_cert_pem: str = ""
+    sms8028_client_key_pem: str = ""
+    sms8028_timeout_seconds: float = 10.0
+    sms8028_max_attempts: int = 2  # only for "nothing reached 8028"; a written request is never repeated
+
     @property
     def oan_delivery_ready(self) -> bool:
         """SMS delivery is switched on and has somewhere to send."""
         return bool(self.oan_delivery_enabled and self.oan_base_url and self.oan_token)
+
+    @property
+    def sms8028_ready(self) -> bool:
+        """Direct 8028 delivery is switched on and has its secret, certificate and key."""
+        return bool(
+            self.sms8028_enabled
+            and self.sms8028_client_secret
+            and self.sms8028_client_cert_pem
+            and self.sms8028_client_key_pem
+        )
+
+    @property
+    def sms_delivery_ready(self) -> bool:
+        """Some SMS delivery (OAN or 8028) is on: an issued code is sent, not only logged."""
+        return bool(self.oan_delivery_ready or self.sms8028_ready)
 
     # ── Subject authentication with national ID (consent scenario 1, phase 2) ──
     # The subject (e.g. a farmer at the bank) proves who they are through an

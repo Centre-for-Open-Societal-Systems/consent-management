@@ -80,7 +80,7 @@ async def _publish(request, code: str, individual_id: str) -> None:
 async def _deliver(request, code: str, destination: str) -> bool:
     """Send the code by SMS through OAN when configured. True when handed over;
     raises OtpError when delivery is configured but fails."""
-    if not _config.oan_delivery_ready:
+    if not _config.sms_delivery_ready:
         return False
     from .otp_delivery import deliver_otp  # late: otp_delivery imports OtpError from here
 
@@ -93,7 +93,7 @@ class _DeliversWhenConfigured:
 
     @property
     def delivers(self) -> bool:
-        return _config.oan_delivery_ready
+        return _config.sms_delivery_ready
 
 
 def _announce(request, code: str, destination: str, provider: str) -> None:

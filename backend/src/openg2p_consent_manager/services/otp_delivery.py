@@ -1,4 +1,8 @@
-"""Deliver issued OTPs by SMS through the OAN Messaging Service.
+"""Deliver issued OTPs by SMS: through the OAN Messaging Service, or straight to 8028.
+
+Two interchangeable transports, chosen by configuration: ``oan_delivery_enabled`` (the OAN
+Messaging Service) or ``sms8028_enabled`` (the 8028 gateway itself, ``services/sms8028.py``).
+Both on is refused: the code would be sent twice. Everything below applies to both.
 
 Without it, the OTP providers only write the code to the service log (development). With
 ``oan_delivery_enabled`` every issued code is sent as one SMS:
@@ -39,6 +43,7 @@ from ..oan_client import (
     SmsDelivery,
     delivery_key,
 )
+from . import sms8028
 from .sms_length import fits_one_sms
 
 _config = Settings.get_config()
@@ -96,11 +101,35 @@ def render_otp_text(code: str, partner: str, minutes: int) -> str:
     raise _otp_error(500, "otp_text_too_long", "the OTP text does not fit one SMS part")
 
 
+async def _send_direct(request, phone: str, text: str) -> str:
+    """Hand the text to 8028. One attempt per code: 8028 cannot de-duplicate, so a request that
+    may have reached it is never repeated (an ambiguous outcome counts as sent for the budgets)."""
+    try:
+        sms_id = await sms8028.send_sms(phone, text)
+    except sms8028.Sms8028Error as exc:
+        if exc.kind == "rejected":
+            _logger.error("OTP delivery rejected by 8028 (request %s): %s", request.id, exc)
+            raise _otp_error(
+                502, "otp_delivery_rejected", "the SMS service refused the code"
+            ) from None
+        _logger.error("OTP delivery unavailable (request %s): %s", request.id, exc.kind)
+        raise _otp_error(
+            503, "otp_delivery_unavailable", "the SMS service is unavailable; ask for a new code"
+        ) from None
+    _logger.info("OTP handed to 8028 for consent request %s (sms %s)", request.id, sms_id)
+    return sms_id
+
+
 async def deliver_otp(request, code: str, individual_id: str | None = None) -> str | None:
-    """Send ``code`` for ``request``. Returns the OAN message id, or None when disabled."""
-    if not _config.oan_delivery_enabled:
+    """Send ``code`` for ``request``. Returns the message id, or None when delivery is off."""
+    if not (_config.oan_delivery_enabled or _config.sms8028_enabled):
         return None
-    if not _config.oan_base_url or not _config.oan_token:
+    if _config.oan_delivery_enabled and _config.sms8028_enabled:
+        raise _otp_error(500, "otp_delivery_misconfigured", "two SMS transports are enabled")
+    direct = _config.sms8028_enabled
+    if direct and not _config.sms8028_ready:
+        raise _otp_error(500, "otp_delivery_misconfigured", "8028 delivery is not configured")
+    if not direct and (not _config.oan_base_url or not _config.oan_token):
         raise _otp_error(500, "otp_delivery_misconfigured", "OAN delivery is not configured")
     transaction = str(request.id)
     expires_at = request.otp_expires_at
@@ -114,6 +143,8 @@ async def deliver_otp(request, code: str, individual_id: str | None = None) -> s
         )
     minutes = max(1, round((expires_at - now).total_seconds() / 60))
     text = render_otp_text(code, await _partner_name(request.partner_id), minutes)
+    if direct:
+        return await _send_direct(request, phone, text)
     issue = str(int(expires_at.timestamp() * 1_000_000))
     delivery = SmsDelivery(
         idempotency_key=delivery_key("dpi-consent", transaction, f"otp-consent-{issue}", "sms"),
